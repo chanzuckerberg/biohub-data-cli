@@ -15,7 +15,7 @@ def safe_join(root: Path, *parts: str) -> Path:
 
 
 @contextlib.contextmanager
-def progress_bar_ctx(total: int) -> Iterator[tqdm]:
+def progress_bar_ctx(total: int | None) -> Iterator[tqdm]:
     pbar = tqdm(total=total, unit="B", unit_scale=True)
     try:
         yield pbar

@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
 from all_data_cli.utils.s3 import (
@@ -32,23 +33,29 @@ def test_expand_s3_location_prefix():
 
 
 def test_s3_url_to_local_path_preserves_key_structure(tmp_path):
-    result = s3_url_to_local_path("s3://bucket/dir1/dir2/file.h5ad", str(tmp_path))
+    result = s3_url_to_local_path("s3://bucket/dir1/dir2/file.h5ad", tmp_path)
     assert result == tmp_path / "dir1" / "dir2" / "file.h5ad"
 
 
 def test_download_s3_object_success(tmp_path):
     s3 = MagicMock()
     s3.head_object.return_value = {"ContentLength": 0}
+
+    def fake_download(bucket, key, dest, callback):
+        Path(dest).write_bytes(b"")
+
     with (
         patch("all_data_cli.utils.s3._make_s3_client", return_value=s3),
         patch("all_data_cli.utils.s3.S3Transfer") as mock_transfer,
     ):
-        result = download_s3_object("s3://bucket/prefix/file.h5ad", str(tmp_path), "ds")
+        mock_transfer.return_value.download_file.side_effect = fake_download
+        result = download_s3_object("s3://bucket/prefix/file.h5ad", tmp_path, "ds")
     assert result is None
+    assert (tmp_path / "prefix" / "file.h5ad").exists()
     mock_transfer.return_value.download_file.assert_called_once_with(
         "bucket",
         "prefix/file.h5ad",
-        str(tmp_path / "prefix" / "file.h5ad"),
+        str(tmp_path / "prefix" / "file.h5ad.part"),
         callback=ANY,
     )
 
@@ -58,7 +65,7 @@ def test_download_s3_object_records_failure(tmp_path):
     s3.head_object.side_effect = OSError("Access denied")
     with patch("all_data_cli.utils.s3._make_s3_client", return_value=s3):
         result = download_s3_object(
-            "s3://bucket/prefix/file.h5ad", str(tmp_path), "My Dataset"
+            "s3://bucket/prefix/file.h5ad", tmp_path, "My Dataset"
         )
     assert result is not None
     assert "file.h5ad" in result.url

@@ -5,9 +5,16 @@ from all_data_cli.utils.http import http_url_to_local_path, download_http
 
 def test_http_url_to_local_path(tmp_path):
     result = http_url_to_local_path(
-        "https://example.com/dir1/dir2/data.h5ad", str(tmp_path)
+        "https://example.com/dir1/dir2/data.h5ad", tmp_path
     )
     assert result == tmp_path / "data.h5ad"
+
+
+def test_http_url_to_local_path_url_decodes_filename(tmp_path):
+    result = http_url_to_local_path(
+        "https://example.com/dir/file%20name.h5ad", tmp_path
+    )
+    assert result == tmp_path / "file name.h5ad"
 
 
 def test_download_http_success(tmp_path):
@@ -18,7 +25,7 @@ def test_download_http_success(tmp_path):
     mock_response.__exit__ = MagicMock(return_value=False)
 
     with patch("all_data_cli.utils.http.requests.get", return_value=mock_response):
-        result = download_http("https://example.com/file.h5ad", str(tmp_path), "ds")
+        result = download_http("https://example.com/file.h5ad", tmp_path, "ds")
 
     assert result is None
     assert (tmp_path / "file.h5ad").read_bytes() == b"data"
@@ -27,7 +34,7 @@ def test_download_http_success(tmp_path):
 def test_download_http_records_failure(tmp_path):
     with patch("all_data_cli.utils.http.requests.get", side_effect=OSError("timeout")):
         result = download_http(
-            "https://example.com/file.h5ad", str(tmp_path), "My Dataset"
+            "https://example.com/file.h5ad", tmp_path, "My Dataset"
         )
 
     assert result is not None

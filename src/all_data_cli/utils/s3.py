@@ -19,7 +19,7 @@ def _make_s3_client():
     return boto3.client("s3", config=BotoConfig(signature_version=UNSIGNED))
 
 
-def s3_url_to_local_path(uri: str, outdir: str) -> Path:
+def s3_url_to_local_path(uri: str, outdir: Path) -> Path:
     """Map an S3 object URI to its local path under outdir, preserving the full S3 key structure.
 
     s3://bucket/dir1/dir2/file.h5ad -> outdir/dir1/dir2/file.h5ad
@@ -29,13 +29,13 @@ def s3_url_to_local_path(uri: str, outdir: str) -> Path:
       e.g. s3://bucket-a/dir/f1 and s3://bucket-b/dir/f1 both map to outdir/dir/f1.
     """
     key = urlparse(uri).path.lstrip("/")
-    return safe_join(Path(outdir), *key.split("/"))
+    return safe_join(outdir, *key.split("/"))
 
 
 def expand_s3_location(uri: str) -> list[str]:
     """Expand a URI into a list of individual S3 object URIs.
 
-    For an exact key, returns [uri]. For a prefix, lists all objects under it.
+    The URI is always treated as a prefix and all objects under it are returned.
     Raises RuntimeError if listing fails.
     """
     s3 = _make_s3_client()
@@ -56,7 +56,7 @@ def expand_s3_location(uri: str) -> list[str]:
 
 
 def download_s3_object(
-    uri: str, outdir: str, dataset_name: str
+    uri: str, outdir: Path, dataset_name: str
 ) -> DownloadFailure | None:
     """Download a single S3 object into outdir, preserving the full S3 key structure."""
     s3 = _make_s3_client()
@@ -64,6 +64,9 @@ def download_s3_object(
     bucket, key = parsed.netloc, parsed.path.lstrip("/")
     outpath = s3_url_to_local_path(uri, outdir)
     outpath.parent.mkdir(parents=True, exist_ok=True)
+    # Stream to a .part file and atomically rename on success so an interrupted
+    # download never leaves a truncated file at outpath that looks complete.
+    tmp = outpath.with_name(outpath.name + ".part")
     try:
         total = s3.head_object(Bucket=bucket, Key=key)["ContentLength"]
         cfg = TransferConfig(
@@ -73,10 +76,10 @@ def download_s3_object(
         )
         with progress_bar_ctx(total) as pbar:
             S3Transfer(s3, cfg).download_file(
-                bucket, key, str(outpath), callback=lambda n: pbar.update(n)
+                bucket, key, str(tmp), callback=lambda n: pbar.update(n)
             )
+        tmp.replace(outpath)
         return None
     except (BotoCoreError, ClientError, OSError) as e:
-        if outpath.exists():
-            outpath.unlink()
+        tmp.unlink(missing_ok=True)
         return DownloadFailure(dataset_name=dataset_name, url=uri, reason=str(e))
