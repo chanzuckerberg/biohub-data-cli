@@ -22,6 +22,11 @@ dev = [
     { name = "pytest-cov" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest-cov" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.34.0" },
@@ -35,6 +40,9 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.0.0" },
 ]
 provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest-cov", specifier = ">=7.1.0" }]
 
 [[package]]
 name = "annotated-types"

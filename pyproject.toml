@@ -36,3 +36,8 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 python_files = ["*_test.py"]
 python_functions = ["test_*"]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.1.0",
+]
