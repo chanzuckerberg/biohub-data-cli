@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "all-data-cli"
+version = "0.1.0"
+description = "BioHub platform CLI"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0.0",
+    "boto3>=1.34.0",
+    "botocore>=1.34.0",
+    "requests>=2.0.0",
+    "tqdm>=4.0.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+bhp = "main:cli"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[tool.setuptools]
+py-modules = ["main", "download", "models"]
+packages = ["utils"]
+package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+python_files = ["*_test.py"]
+python_functions = ["test_*"]
