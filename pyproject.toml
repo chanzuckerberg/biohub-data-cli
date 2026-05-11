@@ -17,27 +17,16 @@ dependencies = [
     "rich>=13.0.0",
 ]
 
-[project.scripts]
-bhp = "main:cli"
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-]
-
-[tool.setuptools]
-py-modules = ["main", "download", "models"]
-packages = ["utils"]
-package-dir = {"" = "src"}
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
 testpaths = ["tests"]
 python_files = ["*_test.py"]
 python_functions = ["test_*"]
 
 [dependency-groups]
 dev = [
+    "pytest>=7.0.0",
     "pytest-cov>=7.1.0",
 ]

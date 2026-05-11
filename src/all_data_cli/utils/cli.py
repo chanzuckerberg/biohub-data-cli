@@ -1,11 +1,11 @@
 import contextlib
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Iterator
 
 from tqdm import tqdm
 
 
-def _safe_join(root: Path, *parts: str) -> Path:
+def safe_join(root: Path, *parts: str) -> Path:
     """Join parts under root, rejecting paths that escape via '..' or absolute components."""
     root = root.resolve()
     candidate = (root / Path(*parts)).resolve()
@@ -15,7 +15,7 @@ def _safe_join(root: Path, *parts: str) -> Path:
 
 
 @contextlib.contextmanager
-def _progress_bar_ctx(total: int) -> Iterator[Any]:
+def progress_bar_ctx(total: int) -> Iterator[tqdm]:
     pbar = tqdm(total=total, unit="B", unit_scale=True)
     try:
         yield pbar
