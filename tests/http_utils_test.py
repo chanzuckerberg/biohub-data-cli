@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from all_data_cli.utils.http import http_url_to_local_path, download_http
+from all_data_cli.utils.http import download_http, http_url_to_local_path
 
 
 def test_http_url_to_local_path(tmp_path):
@@ -23,7 +23,7 @@ def test_download_http_success(tmp_path):
     mock_response.__exit__ = MagicMock(return_value=False)
 
     with patch("all_data_cli.utils.http.requests.get", return_value=mock_response):
-        result = download_http("https://example.com/file.h5ad", tmp_path, "ds")
+        result = download_http("https://example.com/file.h5ad", tmp_path, "coll", "ds")
 
     assert result is None
     assert (tmp_path / "file.h5ad").read_bytes() == b"data"
@@ -31,17 +31,21 @@ def test_download_http_success(tmp_path):
 
 def test_download_http_records_failure(tmp_path):
     with patch("all_data_cli.utils.http.requests.get", side_effect=OSError("timeout")):
-        result = download_http("https://example.com/file.h5ad", tmp_path, "My Dataset")
+        result = download_http(
+            "https://example.com/file.h5ad", tmp_path, "my-coll", "my-ds"
+        )
 
     assert result is not None
-    assert result.dataset_name == "My Dataset"
+    assert result.collection_slug == "my-coll"
+    assert result.dataset_slug == "my-ds"
     assert "timeout" in result.reason
 
 
 def test_download_http_records_failure_for_unresolvable_url(tmp_path):
-    result = download_http("https://example.com/", tmp_path, "My Dataset")
+    result = download_http("https://example.com/", tmp_path, "my-coll", "my-ds")
 
     assert result is not None
-    assert result.dataset_name == "My Dataset"
+    assert result.collection_slug == "my-coll"
+    assert result.dataset_slug == "my-ds"
     assert result.url == "https://example.com/"
     assert "filename" in result.reason

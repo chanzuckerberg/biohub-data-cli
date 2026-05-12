@@ -28,11 +28,18 @@ def http_url_to_local_path(url: str, outdir: Path) -> Path:
     return safe_join(outdir, filename)
 
 
-def download_http(url: str, outdir: Path, dataset_name: str) -> DownloadFailure | None:
+def download_http(
+    url: str, outdir: Path, collection_slug: str, dataset_slug: str
+) -> DownloadFailure | None:
     try:
         outpath = http_url_to_local_path(url, outdir)
     except ValueError as e:
-        return DownloadFailure(dataset_name=dataset_name, url=url, reason=str(e))
+        return DownloadFailure(
+            collection_slug=collection_slug,
+            dataset_slug=dataset_slug,
+            url=url,
+            reason=str(e),
+        )
     outpath.parent.mkdir(parents=True, exist_ok=True)
     # Stream to a .part file and atomically rename on success so an interrupted
     # download never leaves a truncated file at outpath that looks complete.
@@ -52,4 +59,9 @@ def download_http(url: str, outdir: Path, dataset_name: str) -> DownloadFailure 
         return None
     except (requests.RequestException, OSError) as e:
         tmp.unlink(missing_ok=True)
-        return DownloadFailure(dataset_name=dataset_name, url=url, reason=str(e))
+        return DownloadFailure(
+            collection_slug=collection_slug,
+            dataset_slug=dataset_slug,
+            url=url,
+            reason=str(e),
+        )
