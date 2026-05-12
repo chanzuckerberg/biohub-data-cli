@@ -44,7 +44,7 @@ def expand_s3_location(uri: str) -> list[str]:
 
     Corner cases handling:
     1. If the uri represents an object dir/f1, while dir/f1/sub exists,
-       only the object dir/f1 will be returned.
+       only the object dir/f1/sub will be returned.
     2. If the uri represents an object dir/f1, while dir/f1.bak exists,
        only the object dir/f1 will be returned.
     3. If the uri represents a folder dir/, dir/dir2 exists as on object
