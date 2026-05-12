@@ -1,0 +1,252 @@
+from pathlib import Path
+from typing import NamedTuple
+from unittest.mock import ANY, MagicMock, patch
+
+import pytest
+from botocore.exceptions import BotoCoreError, ClientError
+
+from all_data_cli.utils.s3 import (
+    download_s3_object,
+    expand_s3_location,
+    s3_url_to_local_path,
+)
+
+
+def _make_s3_mock(
+    mocked_pages_under_dir: list[list[str]] | None = None,
+    head_exists: bool = False,
+    paginate_side_effect: Exception | None = None,
+    head_side_effect: Exception | None = None,
+) -> MagicMock:
+    """S3 client mock. `mocked_pages_under_dir` is the paginator output: a list
+    of pages, each a list of object keys. `head_object` succeeds if
+    `head_exists` else raises 404. Either side effect can be supplied to
+    override the configured return."""
+    s3 = MagicMock()
+    paginator = MagicMock()
+    if paginate_side_effect is not None:
+        paginator.paginate.side_effect = paginate_side_effect
+    else:
+        paginator.paginate.return_value = [
+            {"Contents": [{"Key": k} for k in page]}
+            for page in (mocked_pages_under_dir or [[]])
+        ]
+    s3.get_paginator.return_value = paginator
+    if head_side_effect is not None:
+        s3.head_object.side_effect = head_side_effect
+    elif head_exists:
+        s3.head_object.return_value = {"ContentLength": 1}
+    else:
+        s3.head_object.side_effect = ClientError(
+            {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
+        )
+    return s3
+
+
+class ReturnCase(NamedTuple):
+    id: str
+    uri: str
+    mocked_pages_under_dir: list[list[str]]
+    head_exists: bool
+    expected_uris: list[str]
+    list_paginator_called_with: str
+    head_called_with: str | None  # None means HEAD must not be called
+
+
+def test_expand_s3_location_returns():
+    cases = [
+        ReturnCase(
+            id="single_file_head_wins",
+            uri="s3://bucket/dir/file.h5ad",
+            mocked_pages_under_dir=[[]],
+            head_exists=True,
+            expected_uris=["s3://bucket/dir/file.h5ad"],
+            list_paginator_called_with="dir/file.h5ad/",
+            head_called_with="dir/file.h5ad",
+        ),
+        ReturnCase(
+            id="folder_listing",
+            uri="s3://bucket/prefix/",
+            mocked_pages_under_dir=[["prefix/file.h5ad", "prefix/meta.csv"]],
+            head_exists=False,
+            expected_uris=[
+                "s3://bucket/prefix/file.h5ad",
+                "s3://bucket/prefix/meta.csv",
+            ],
+            list_paginator_called_with="prefix/",
+            head_called_with=None,
+        ),
+        ReturnCase(
+            id="folder_wins_over_bare",
+            uri="s3://bucket/prefix/file.h5ad",
+            mocked_pages_under_dir=[["prefix/file.h5ad/sub", "prefix/file.h5ad/sub2"]],
+            head_exists=False,
+            expected_uris=[
+                "s3://bucket/prefix/file.h5ad/sub",
+                "s3://bucket/prefix/file.h5ad/sub2",
+            ],
+            list_paginator_called_with="prefix/file.h5ad/",
+            head_called_with=None,
+        ),
+        ReturnCase(
+            id="skips_directory_markers",
+            uri="s3://bucket/prefix/",
+            mocked_pages_under_dir=[["prefix/", "prefix/file.h5ad", "prefix/sub/"]],
+            head_exists=False,
+            expected_uris=["s3://bucket/prefix/file.h5ad"],
+            list_paginator_called_with="prefix/",
+            head_called_with=None,
+        ),
+        ReturnCase(
+            id="multiple_pages",
+            uri="s3://bucket/prefix/",
+            mocked_pages_under_dir=[["prefix/a", "prefix/b"], ["prefix/c"]],
+            head_exists=False,
+            expected_uris=[
+                "s3://bucket/prefix/a",
+                "s3://bucket/prefix/b",
+                "s3://bucket/prefix/c",
+            ],
+            list_paginator_called_with="prefix/",
+            head_called_with=None,
+        ),
+    ]
+    for case in cases:
+        s3 = _make_s3_mock(
+            mocked_pages_under_dir=case.mocked_pages_under_dir,
+            head_exists=case.head_exists,
+        )
+        with patch("all_data_cli.utils.s3._make_s3_client", return_value=s3):
+            result = expand_s3_location(case.uri)
+        assert result == case.expected_uris, (
+            f"[{case.id}] expected {case.expected_uris}, got {result}"
+        )
+        s3.get_paginator.assert_called_once_with("list_objects_v2")
+        s3.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="bucket", Prefix=case.list_paginator_called_with
+        )
+        if case.head_called_with is None:
+            assert not s3.head_object.called, f"[{case.id}] HEAD should not be called"
+        else:
+            s3.head_object.assert_called_once_with(
+                Bucket="bucket", Key=case.head_called_with
+            )
+
+
+class RaisesCase(NamedTuple):
+    id: str
+    uri: str
+    paginate_side_effect: Exception | None
+    head_side_effect: Exception | None
+    head_exists: bool
+    expected_match: str
+    head_should_be_called: bool
+
+
+def test_expand_s3_location_raises():
+    cases = [
+        RaisesCase(
+            id="head_404",
+            uri="s3://bucket/key",
+            paginate_side_effect=None,
+            head_side_effect=ClientError({"Error": {"Code": "404"}}, "HeadObject"),
+            head_exists=False,
+            expected_match="No object found",
+            head_should_be_called=True,
+        ),
+        RaisesCase(
+            id="head_non_404",
+            uri="s3://bucket/key",
+            paginate_side_effect=None,
+            head_side_effect=ClientError(
+                {"Error": {"Code": "AccessDenied"}}, "HeadObject"
+            ),
+            head_exists=False,
+            expected_match="Failed to resolve",
+            head_should_be_called=True,
+        ),
+        RaisesCase(
+            id="head_botocore_error",
+            uri="s3://bucket/key",
+            paginate_side_effect=None,
+            head_side_effect=BotoCoreError(),
+            head_exists=False,
+            expected_match="Failed to resolve",
+            head_should_be_called=True,
+        ),
+        RaisesCase(
+            id="folder_is_empty",
+            uri="s3://bucket/empty/",
+            paginate_side_effect=None,
+            head_side_effect=None,
+            head_exists=True,
+            expected_match="No objects found",
+            head_should_be_called=False,
+        ),
+        RaisesCase(
+            id="list_fails",
+            uri="s3://bucket/prefix/",
+            paginate_side_effect=ClientError(
+                {"Error": {"Code": "AccessDenied"}}, "ListObjectsV2"
+            ),
+            head_side_effect=None,
+            head_exists=False,
+            expected_match="Failed to list S3 objects",
+            head_should_be_called=False,
+        ),
+    ]
+    for case in cases:
+        s3 = _make_s3_mock(
+            mocked_pages_under_dir=[[]],
+            head_exists=case.head_exists,
+            paginate_side_effect=case.paginate_side_effect,
+            head_side_effect=case.head_side_effect,
+        )
+        with patch("all_data_cli.utils.s3._make_s3_client", return_value=s3):
+            with pytest.raises(RuntimeError, match=case.expected_match):
+                expand_s3_location(case.uri)
+        if case.head_should_be_called:
+            assert s3.head_object.called, f"[{case.id}] HEAD should be called"
+        else:
+            assert not s3.head_object.called, f"[{case.id}] HEAD should not be called"
+
+
+def test_s3_url_to_local_path_preserves_key_structure(tmp_path):
+    result = s3_url_to_local_path("s3://bucket/dir1/dir2/file.h5ad", tmp_path)
+    assert result == tmp_path / "dir1" / "dir2" / "file.h5ad"
+
+
+def test_download_s3_object_success(tmp_path):
+    s3 = MagicMock()
+    s3.head_object.return_value = {"ContentLength": 0}
+
+    def fake_download(bucket, key, dest, callback):
+        Path(dest).write_bytes(b"")
+
+    with (
+        patch("all_data_cli.utils.s3._make_s3_client", return_value=s3),
+        patch("all_data_cli.utils.s3.S3Transfer") as mock_transfer,
+    ):
+        mock_transfer.return_value.download_file.side_effect = fake_download
+        result = download_s3_object("s3://bucket/prefix/file.h5ad", tmp_path, "ds")
+    assert result is None
+    assert (tmp_path / "prefix" / "file.h5ad").exists()
+    mock_transfer.return_value.download_file.assert_called_once_with(
+        "bucket",
+        "prefix/file.h5ad",
+        str(tmp_path / "prefix" / "file.h5ad.part"),
+        callback=ANY,
+    )
+
+
+def test_download_s3_object_records_failure(tmp_path):
+    s3 = MagicMock()
+    s3.head_object.side_effect = OSError("Access denied")
+    with patch("all_data_cli.utils.s3._make_s3_client", return_value=s3):
+        result = download_s3_object(
+            "s3://bucket/prefix/file.h5ad", tmp_path, "My Dataset"
+        )
+    assert result is not None
+    assert "file.h5ad" in result.url
+    assert result.dataset_name == "My Dataset"
+    assert "Access denied" in result.reason

@@ -1,5 +1,6 @@
-# open-source-starter
-starter template for CZI open source projects
+# all-data-cli
+
+All data CLI.
 
 ## Code of Conduct
 
