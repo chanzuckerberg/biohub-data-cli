@@ -35,24 +35,58 @@ def s3_url_to_local_path(uri: str, outdir: Path) -> Path:
 def expand_s3_location(uri: str) -> list[str]:
     """Expand a URI into a list of individual S3 object URIs.
 
-    The URI is always treated as a prefix and all objects under it are returned.
-    Raises RuntimeError if listing fails.
+    Resolution rule — folder wins:
+    1. List under `<key>/`. If anything is there, return all of those objects;
+       the caller's key is treated as a folder regardless of whether a bare
+       object with the same name also exists.
+    2. Otherwise, HEAD `<key>` and return [uri] if it exists.
+    3. Otherwise raise RuntimeError.
+
+    Corner cases handling:
+    1. If the uri represents an object dir/f1, while dir/f1/sub exists,
+       only the object dir/f1 will be returned.
+    2. If the uri represents an object dir/f1, while dir/f1.bak exists,
+       only the object dir/f1 will be returned.
+    3. If the uri represents a folder dir/, dir/dir2 exists as on object
+       and dir/dir2/f1 exists as another object (i.e. pathological S3 layout),
+       both will be returned and the cli will throw when writing to the filesystem.
+
+    Raises RuntimeError on S3 access errors or when the URI resolves to nothing.
     """
     s3 = _make_s3_client()
     parsed = urlparse(uri)
     bucket, key = parsed.netloc, parsed.path.lstrip("/")
 
-    objects = []
+    # List under <key>/ — normalizes trailing slashes and excludes string-prefix
+    # false positives like `<key>.bak` at the S3 API level.
+    list_prefix = key.rstrip("/") + "/" if key else ""
+    raw_keys: list[str] = []
     paginator = s3.get_paginator("list_objects_v2")
     try:
-        for page in paginator.paginate(Bucket=bucket, Prefix=key):
+        for page in paginator.paginate(Bucket=bucket, Prefix=list_prefix):
             for obj in page.get("Contents", []):
-                # Skip directory markers (objects ending with /)
-                if not obj["Key"].endswith("/"):
-                    objects.append(f"s3://{bucket}/{obj['Key']}")
+                if not obj["Key"].endswith("/"):  # skip directory markers
+                    raw_keys.append(obj["Key"])
     except (BotoCoreError, ClientError) as e:
         raise RuntimeError(f"Failed to list S3 objects at {uri}: {e}") from e
-    return objects
+
+    if raw_keys:
+        return [f"s3://{bucket}/{k}" for k in raw_keys]
+
+    # Nothing under the prefix. If the caller asked for a folder explicitly
+    # (trailing slash) or the whole bucket (empty key), there's no fallback.
+    if not key or key.endswith("/"):
+        raise RuntimeError(f"No objects found at {uri}")
+
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+            raise RuntimeError(f"No object found at {uri}") from None
+        raise RuntimeError(f"Failed to resolve S3 object at {uri}: {e}") from e
+    except BotoCoreError as e:
+        raise RuntimeError(f"Failed to resolve S3 object at {uri}: {e}") from e
+    return [f"s3://{bucket}/{key}"]
 
 
 def download_s3_object(

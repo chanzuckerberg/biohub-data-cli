@@ -28,10 +28,11 @@ def http_url_to_local_path(url: str, outdir: Path) -> Path:
     return safe_join(outdir, filename)
 
 
-def download_http(
-    url: str, outdir: Path, dataset_name: str
-) -> DownloadFailure | None:
-    outpath = http_url_to_local_path(url, outdir)
+def download_http(url: str, outdir: Path, dataset_name: str) -> DownloadFailure | None:
+    try:
+        outpath = http_url_to_local_path(url, outdir)
+    except ValueError as e:
+        return DownloadFailure(dataset_name=dataset_name, url=url, reason=str(e))
     outpath.parent.mkdir(parents=True, exist_ok=True)
     # Stream to a .part file and atomically rename on success so an interrupted
     # download never leaves a truncated file at outpath that looks complete.

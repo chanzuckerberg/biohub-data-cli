@@ -4,9 +4,7 @@ from all_data_cli.utils.http import http_url_to_local_path, download_http
 
 
 def test_http_url_to_local_path(tmp_path):
-    result = http_url_to_local_path(
-        "https://example.com/dir1/dir2/data.h5ad", tmp_path
-    )
+    result = http_url_to_local_path("https://example.com/dir1/dir2/data.h5ad", tmp_path)
     assert result == tmp_path / "data.h5ad"
 
 
@@ -33,10 +31,17 @@ def test_download_http_success(tmp_path):
 
 def test_download_http_records_failure(tmp_path):
     with patch("all_data_cli.utils.http.requests.get", side_effect=OSError("timeout")):
-        result = download_http(
-            "https://example.com/file.h5ad", tmp_path, "My Dataset"
-        )
+        result = download_http("https://example.com/file.h5ad", tmp_path, "My Dataset")
 
     assert result is not None
     assert result.dataset_name == "My Dataset"
     assert "timeout" in result.reason
+
+
+def test_download_http_records_failure_for_unresolvable_url(tmp_path):
+    result = download_http("https://example.com/", tmp_path, "My Dataset")
+
+    assert result is not None
+    assert result.dataset_name == "My Dataset"
+    assert result.url == "https://example.com/"
+    assert "filename" in result.reason
