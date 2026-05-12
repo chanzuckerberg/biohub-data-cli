@@ -2,11 +2,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
 from all_data_cli.download import (
     download_collections,
+    fetch_collection,
     submit_dataset_downloads,
 )
 from all_data_cli.main import cli
@@ -37,6 +39,33 @@ MOCK_COLLECTION = Collection.model_validate(
         ],
     }
 )
+
+
+# ── fetch_collection ────────────────────────────────────────────────────────
+
+
+def test_fetch_collection_raises_when_no_fixtures_dir(monkeypatch):
+    monkeypatch.delenv("ALL_DATA_CLI_FIXTURES_DIR", raising=False)
+    with pytest.raises(NotImplementedError, match="ALL_DATA_CLI_FIXTURES_DIR"):
+        fetch_collection("coll-1")
+
+
+def test_fetch_collection_loads_from_fixtures_dir(tmp_path, monkeypatch):
+    (tmp_path / "coll-1.json").write_text(MOCK_COLLECTION.model_dump_json())
+    monkeypatch.setenv("ALL_DATA_CLI_FIXTURES_DIR", str(tmp_path))
+
+    result = fetch_collection("coll-1")
+
+    assert result.slug == MOCK_COLLECTION.slug
+    assert [d.slug for d in result.datasets] == [
+        d.slug for d in MOCK_COLLECTION.datasets
+    ]
+
+
+def test_fetch_collection_missing_fixture_raises_click_exception(tmp_path, monkeypatch):
+    monkeypatch.setenv("ALL_DATA_CLI_FIXTURES_DIR", str(tmp_path))
+    with pytest.raises(click.ClickException, match="No fixture for missing-id"):
+        fetch_collection("missing-id")
 
 
 # ── CLI command ──────────────────────────────────────────────────────────────
@@ -138,9 +167,10 @@ def test_submit_dataset_downloads_routes_and_collects_immediate_failures(tmp_pat
         mock_http.return_value = None
         mock_s3.return_value = None
 
-        with ThreadPoolExecutor(max_workers=2) as http_ex, ThreadPoolExecutor(
-            max_workers=2
-        ) as s3_ex:
+        with (
+            ThreadPoolExecutor(max_workers=2) as http_ex,
+            ThreadPoolExecutor(max_workers=2) as s3_ex,
+        ):
             futures, immediate = submit_dataset_downloads(
                 "coll", dataset, Path(tmp_path), http_ex, s3_ex
             )
@@ -164,9 +194,10 @@ def test_submit_dataset_downloads_unknown_scheme(tmp_path):
         }
     )
 
-    with ThreadPoolExecutor(max_workers=1) as http_ex, ThreadPoolExecutor(
-        max_workers=1
-    ) as s3_ex:
+    with (
+        ThreadPoolExecutor(max_workers=1) as http_ex,
+        ThreadPoolExecutor(max_workers=1) as s3_ex,
+    ):
         futures, immediate = submit_dataset_downloads(
             "coll", dataset, Path(tmp_path), http_ex, s3_ex
         )
@@ -199,9 +230,10 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
         patch("all_data_cli.download.download_s3_object", return_value=None) as mock_s3,
         patch("all_data_cli.download.expand_s3_location", return_value=expanded),
     ):
-        with ThreadPoolExecutor(max_workers=2) as http_ex, ThreadPoolExecutor(
-            max_workers=2
-        ) as s3_ex:
+        with (
+            ThreadPoolExecutor(max_workers=2) as http_ex,
+            ThreadPoolExecutor(max_workers=2) as s3_ex,
+        ):
             futures, immediate = submit_dataset_downloads(
                 "coll-x", dataset, Path(tmp_path), http_ex, s3_ex
             )
@@ -230,9 +262,10 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path
         "all_data_cli.download.expand_s3_location",
         side_effect=RuntimeError("listing failed: access denied"),
     ):
-        with ThreadPoolExecutor(max_workers=1) as http_ex, ThreadPoolExecutor(
-            max_workers=1
-        ) as s3_ex:
+        with (
+            ThreadPoolExecutor(max_workers=1) as http_ex,
+            ThreadPoolExecutor(max_workers=1) as s3_ex,
+        ):
             futures, immediate = submit_dataset_downloads(
                 "coll-x", dataset, Path(tmp_path), http_ex, s3_ex
             )
@@ -270,10 +303,20 @@ def test_download_collections_submits_every_dataset_across_collections(tmp_path)
             "slug": "coll-a",
             "title": "A",
             "datasets": [
-                {"id": "d1", "slug": "ds1", "title": "D1", "file_format": "parquet",
-                 "urls": ["https://example.com/a1.parquet"]},
-                {"id": "d2", "slug": "ds2", "title": "D2", "file_format": "parquet",
-                 "urls": ["https://example.com/a2.parquet"]},
+                {
+                    "id": "d1",
+                    "slug": "ds1",
+                    "title": "D1",
+                    "file_format": "parquet",
+                    "urls": ["https://example.com/a1.parquet"],
+                },
+                {
+                    "id": "d2",
+                    "slug": "ds2",
+                    "title": "D2",
+                    "file_format": "parquet",
+                    "urls": ["https://example.com/a2.parquet"],
+                },
             ],
         }
     )
@@ -283,8 +326,13 @@ def test_download_collections_submits_every_dataset_across_collections(tmp_path)
             "slug": "coll-b",
             "title": "B",
             "datasets": [
-                {"id": "d3", "slug": "ds3", "title": "D3", "file_format": "parquet",
-                 "urls": ["https://example.com/b1.parquet"]},
+                {
+                    "id": "d3",
+                    "slug": "ds3",
+                    "title": "D3",
+                    "file_format": "parquet",
+                    "urls": ["https://example.com/b1.parquet"],
+                },
             ],
         }
     )
@@ -299,9 +347,7 @@ def test_download_collections_submits_every_dataset_across_collections(tmp_path)
     # Three datasets total → three submissions (one URL each).
     assert mock_http.call_count == 3
     # Each (collection, dataset) attribution shows up exactly once.
-    attributions = {
-        (call.args[2], call.args[3]) for call in mock_http.call_args_list
-    }
+    attributions = {(call.args[2], call.args[3]) for call in mock_http.call_args_list}
     assert attributions == {
         ("coll-a", "ds1"),
         ("coll-a", "ds2"),

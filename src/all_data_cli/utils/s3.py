@@ -16,7 +16,7 @@ _S3_MAX_CONCURRENCY = 8
 
 
 @functools.cache
-def make_s3_client():
+def _make_s3_client():
     # Cached so all workers share one client (boto3 clients are thread-safe).
     # Constructing a fresh client per call adds non-trivial overhead when
     # downloading many small objects (e.g. Zarr chunks).
@@ -58,7 +58,7 @@ def expand_s3_location(uri: str) -> list[str]:
 
     Raises RuntimeError on S3 access errors or when the URI resolves to nothing.
     """
-    s3 = make_s3_client()
+    s3 = _make_s3_client()
     parsed = urlparse(uri)
     bucket, key = parsed.netloc, parsed.path.lstrip("/")
 
@@ -98,7 +98,7 @@ def download_s3_object(
     uri: str, outdir: Path, collection_slug: str, dataset_slug: str
 ) -> DownloadFailure | None:
     """Download a single S3 object into outdir, preserving the full S3 key structure."""
-    s3 = make_s3_client()
+    s3 = _make_s3_client()
     parsed = urlparse(uri)
     bucket, key = parsed.netloc, parsed.path.lstrip("/")
     outpath = s3_url_to_local_path(uri, outdir)

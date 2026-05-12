@@ -116,7 +116,7 @@ def test_expand_s3_location_returns():
             mocked_pages_under_dir=case.mocked_pages_under_dir,
             head_exists=case.head_exists,
         )
-        with patch("all_data_cli.utils.s3.make_s3_client", return_value=s3):
+        with patch("all_data_cli.utils.s3._make_s3_client", return_value=s3):
             result = expand_s3_location(case.uri)
         assert result == case.expected_uris, (
             f"[{case.id}] expected {case.expected_uris}, got {result}"
@@ -202,7 +202,7 @@ def test_expand_s3_location_raises():
             paginate_side_effect=case.paginate_side_effect,
             head_side_effect=case.head_side_effect,
         )
-        with patch("all_data_cli.utils.s3.make_s3_client", return_value=s3):
+        with patch("all_data_cli.utils.s3._make_s3_client", return_value=s3):
             with pytest.raises(RuntimeError, match=case.expected_match):
                 expand_s3_location(case.uri)
         if case.head_should_be_called:
@@ -224,7 +224,7 @@ def test_download_s3_object_success(tmp_path):
         Path(dest).write_bytes(b"")
 
     with (
-        patch("all_data_cli.utils.s3.make_s3_client", return_value=s3),
+        patch("all_data_cli.utils.s3._make_s3_client", return_value=s3),
         patch("all_data_cli.utils.s3.S3Transfer") as mock_transfer,
     ):
         mock_transfer.return_value.download_file.side_effect = fake_download
@@ -244,7 +244,7 @@ def test_download_s3_object_success(tmp_path):
 def test_download_s3_object_records_failure(tmp_path):
     s3 = MagicMock()
     s3.head_object.side_effect = OSError("Access denied")
-    with patch("all_data_cli.utils.s3.make_s3_client", return_value=s3):
+    with patch("all_data_cli.utils.s3._make_s3_client", return_value=s3):
         result = download_s3_object(
             "s3://bucket/prefix/file.h5ad", tmp_path, "my-coll", "my-ds"
         )

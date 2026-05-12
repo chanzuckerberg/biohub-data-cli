@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -13,12 +14,25 @@ console = Console()
 _HTTP_MAX_WORKERS = 10
 _S3_MAX_WORKERS = 10
 
+_FIXTURES_DIR_ENV = "ALL_DATA_CLI_FIXTURES_DIR"
+
 
 def fetch_collection(collection_id: str) -> Collection:
-    """Fetch a collection by ID. Stub until the backend endpoint lands.
+    """Fetch a collection by ID.
+
+    Backend endpoint is pending; until it lands, set $ALL_DATA_CLI_FIXTURES_DIR
+    to a directory of `<collection_id>.json` files validated against `Collection`.
+    Remove this branch once the real endpoint is wired up.
     """
+    fixtures_dir = os.environ.get(_FIXTURES_DIR_ENV)
+    if fixtures_dir:
+        path = Path(fixtures_dir) / f"{collection_id}.json"
+        if not path.exists():
+            raise click.ClickException(f"No fixture for {collection_id} at {path}")
+        return Collection.model_validate_json(path.read_text())
     raise NotImplementedError(
-        f"fetch_collection is stubbed; backend endpoint pending (id={collection_id})"
+        f"fetch_collection is stubbed; backend endpoint pending (id={collection_id}). "
+        f"Set ${_FIXTURES_DIR_ENV} to test with local fixtures."
     )
 
 
@@ -133,13 +147,11 @@ def download_group() -> None:
     "-o",
     "--outdir",
     default=".",
-    type=click.Path(file_okay=False, dir_okay=True, writable=True),
+    type=click.Path(file_okay=False, dir_okay=True, writable=True, path_type=Path),
     help="Output directory for downloaded files.",
 )
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
-def download_collection_command(
-    ids: tuple[str, ...], outdir: str, yes: bool
-) -> None:
+def download_collection_command(ids: tuple[str, ...], outdir: Path, yes: bool) -> None:
     """Download one or more collections by ID."""
     collections = [fetch_collection(cid) for cid in ids]
 
@@ -151,13 +163,13 @@ def download_collection_command(
     if not yes:
         click.confirm(
             f"Download {len(collections)} collection(s), {n_datasets} dataset(s)?",
-            default=True,
+            default=False,
             abort=True,
         )
 
-    failures = download_collections(collections, Path(outdir))
+    failures = download_collections(collections, outdir)
 
-    # TODO(AIP-285): print failures in a more user-friendly way.
+    # TODO(AIP-285): print failures + progress bar in a more user-friendly way.
     if failures:
         raise click.ClickException(f"{len(failures)} download(s) failed.")
     console.print(f"\n[green]✅ done — {outdir}[/green]")
