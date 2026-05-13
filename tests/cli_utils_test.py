@@ -6,9 +6,6 @@ from rich.console import Group
 from all_data_cli.models import DownloadFailure
 from all_data_cli.utils.cli import (
     DownloadDisplay,
-    advance_task,
-    grow_task_total,
-    make_progress,
     safe_join,
 )
 
@@ -151,31 +148,56 @@ def test_failure_fields_with_rich_markup_characters_render_literally():
     assert "[Errno 13]" in rendered
 
 
-# ── advance_task / grow_task_total ──────────────────────────────────────────
+# ── DownloadDisplay.advance_task / DownloadDisplay.grow_task_total ──────────
 
 
 def test_advance_task_bumps_completed():
-    progress = make_progress()
-    task_id = progress.add_task("t", total=100)
-    advance_task(progress, task_id, 30)
-    advance_task(progress, task_id, 40)
-    task = next(t for t in progress.tasks if t.id == task_id)
+    d = DownloadDisplay()
+    task_id = d.progress.add_task("t", total=100)
+    d.advance_task(task_id, 30)
+    d.advance_task(task_id, 40)
+    task = next(t for t in d.progress.tasks if t.id == task_id)
     assert task.completed == 70
 
 
 def test_grow_task_total_adds_to_existing_total():
     """Used when an HTTP worker learns Content-Length after the task is created."""
-    progress = make_progress()
-    task_id = progress.add_task("t", total=1000)  # seeded from S3 sizes
-    grow_task_total(progress, task_id, 250)  # HTTP file is 250 bytes
-    task = next(t for t in progress.tasks if t.id == task_id)
+    d = DownloadDisplay()
+    task_id = d.progress.add_task("t", total=1000)  # seeded from S3 sizes
+    d.grow_task_total(task_id, 250)  # HTTP file is 250 bytes
+    task = next(t for t in d.progress.tasks if t.id == task_id)
     assert task.total == 1250
 
 
 def test_grow_task_total_starts_from_none():
     """If the task was created with total=None (no known size), grow from 0."""
-    progress = make_progress()
-    task_id = progress.add_task("t", total=None)
-    grow_task_total(progress, task_id, 500)
-    task = next(t for t in progress.tasks if t.id == task_id)
+    d = DownloadDisplay()
+    task_id = d.progress.add_task("t", total=None)
+    d.grow_task_total(task_id, 500)
+    task = next(t for t in d.progress.tasks if t.id == task_id)
     assert task.total == 500
+
+
+def test_grow_task_total_is_thread_safe_under_concurrent_workers():
+    """Many HTTP workers reporting Content-Length at once must not lose updates."""
+    import threading
+
+    d = DownloadDisplay()
+    task_id = d.progress.add_task("t", total=0)
+    n_threads = 50
+    per_thread = 1000
+    start = threading.Event()
+
+    def worker():
+        start.wait()
+        d.grow_task_total(task_id, per_thread)
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    start.set()
+    for t in threads:
+        t.join()
+
+    task = next(t for t in d.progress.tasks if t.id == task_id)
+    assert task.total == n_threads * per_thread

@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from types import TracebackType
 
@@ -26,34 +27,6 @@ def safe_join(root: Path, *parts: str) -> Path:
     if not candidate.is_relative_to(root):
         raise ValueError(f"refusing path that escapes {root}: {parts!r}")
     return candidate
-
-
-def _find_task(progress: Progress, task_id: TaskID):
-    # Linear scan is okay for now, given there is one Task per dataset and we
-    # don't expect to download many datasets. Revisit when supporting more datasets.
-    # Used by http download only. 
-    return next((t for t in progress.tasks if t.id == task_id), None)
-
-
-def advance_task(progress: Progress, task_id: TaskID, n: int) -> None:
-    """Bump one Progress task by `n` bytes.
-
-    The rare HTTP-without-Content-Length case may show >100% in the percentage / bytes columns.
-    """
-    progress.update(task_id, advance=n)
-
-
-def grow_task_total(progress: Progress, task_id: TaskID, n: int) -> None:
-    """Add `n` bytes to one task's total.
-
-    Workers call this once when they learn a file's size (e.g. HTTP
-    Content-Length on GET response). S3 sizes are seeded at task-creation
-    time from list_objects_v2, so S3 workers don't call this.
-    """
-    task = _find_task(progress, task_id)
-    if task is None:
-        return
-    progress.update(task_id, total=(task.total or 0) + n)
 
 
 def make_progress() -> Progress:
@@ -89,7 +62,32 @@ class DownloadDisplay:
         # (collection_slug, dataset_slug) -> its branch under the collection's
         # branch. Same memoization rationale, scoped per dataset.
         self._dataset_branches: dict[tuple[str, str], Tree] = {}
-        self._live = Live(self.progress, console=console, refresh_per_second=4)
+        self._live = Live(
+            self.progress, console=console, refresh_per_second=4, transient=False
+        )
+        # Serializes read-modify-write of a task's total across HTTP workers
+        # that report Content-Length concurrently for the same dataset.
+        self._total_lock = threading.Lock()
+
+    def advance_task(self, task_id: TaskID, n: int) -> None:
+        """Bump one Progress task by `n` bytes.
+
+        The rare HTTP-without-Content-Length case may show >100% in the percentage / bytes columns.
+        """
+        self.progress.update(task_id, advance=n)
+
+    def grow_task_total(self, task_id: TaskID, n: int) -> None:
+        """Add `n` bytes to one task's total.
+
+        Called from HTTP workers when they learn a file's size (e.g. via
+        Content-Length on the GET response). S3 sizes are seeded at task
+        creation time from list_objects_v2, so S3 workers don't call this.
+        """
+        with self._total_lock:
+            task = next((t for t in self.progress.tasks if t.id == task_id), None)
+            if task is None:
+                return
+            self.progress.update(task_id, total=(task.total or 0) + n)
 
     def __enter__(self) -> "DownloadDisplay":
         self._live.__enter__()

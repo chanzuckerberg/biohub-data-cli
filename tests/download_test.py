@@ -11,7 +11,7 @@ from all_data_cli.download import (
     fetch_collection,
     submit_dataset_downloads,
 )
-from all_data_cli.utils.cli import make_progress
+from all_data_cli.utils.cli import DownloadDisplay
 from all_data_cli.main import cli
 from all_data_cli.models import Collection, Dataset, DownloadFailure
 
@@ -173,7 +173,7 @@ def test_submit_dataset_downloads_routes_and_collects_submission_failures(tmp_pa
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
             futures, submission_failures = submit_dataset_downloads(
-                "coll", dataset, Path(tmp_path), http_ex, s3_ex, make_progress()
+                "coll", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
             )
             for f in futures:
                 f.result()
@@ -200,7 +200,7 @@ def test_submit_dataset_downloads_unknown_scheme(tmp_path):
         ThreadPoolExecutor(max_workers=1) as s3_ex,
     ):
         futures, submission_failures = submit_dataset_downloads(
-            "coll", dataset, Path(tmp_path), http_ex, s3_ex, make_progress()
+            "coll", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
         )
 
     assert futures == []
@@ -236,7 +236,7 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
             futures, submission_failures = submit_dataset_downloads(
-                "coll-x", dataset, Path(tmp_path), http_ex, s3_ex, make_progress()
+                "coll-x", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
             )
             for f in futures:
                 f.result()
@@ -268,7 +268,7 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path
             ThreadPoolExecutor(max_workers=1) as s3_ex,
         ):
             futures, submission_failures = submit_dataset_downloads(
-                "coll-x", dataset, Path(tmp_path), http_ex, s3_ex, make_progress()
+                "coll-x", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
             )
 
     assert futures == []
@@ -417,7 +417,7 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
     )
     # Five chunks of 1000 bytes each → orchestrator seeds total=5000 from listing.
     expanded = [(f"s3://bucket/zarr/chunk-{i}", 1000) for i in range(5)]
-    progress = make_progress()
+    display = DownloadDisplay()
 
     with (
         patch("all_data_cli.download.download_s3_object", return_value=None) as mock_s3,
@@ -428,14 +428,14 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
             futures, _ = submit_dataset_downloads(
-                "coll", dataset, Path(tmp_path), http_ex, s3_ex, progress
+                "coll", dataset, Path(tmp_path), http_ex, s3_ex, display
             )
             for f in futures:
                 f.result()
 
     # Five S3 objects, but a single shared progress task with the dataset's total.
-    assert len(progress.tasks) == 1
-    task = progress.tasks[0]
+    assert len(display.progress.tasks) == 1
+    task = display.progress.tasks[0]
     assert task.description == "coll/matrix-zarr"
     # Total comes from summed S3 sizes (5 × 1000), not from dataset.file_size_bytes.
     assert task.total == 5000
@@ -457,16 +457,16 @@ def test_submit_dataset_downloads_no_progress_task_when_only_submission_failures
             "urls": ["ftp://example.com/file.h5ad"],
         }
     )
-    progress = make_progress()
+    display = DownloadDisplay()
 
     with (
         ThreadPoolExecutor(max_workers=1) as http_ex,
         ThreadPoolExecutor(max_workers=1) as s3_ex,
     ):
         futures, submission_failures = submit_dataset_downloads(
-            "coll", dataset, Path(tmp_path), http_ex, s3_ex, progress
+            "coll", dataset, Path(tmp_path), http_ex, s3_ex, display
         )
 
     assert futures == []
     assert len(submission_failures) == 1
-    assert progress.tasks == []
+    assert display.progress.tasks == []

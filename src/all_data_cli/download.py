@@ -4,15 +4,9 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import click
-from rich.progress import Progress
 
 from all_data_cli.models import Collection, Dataset, DownloadFailure
-from all_data_cli.utils.cli import (
-    DownloadDisplay,
-    advance_task,
-    console,
-    grow_task_total,
-)
+from all_data_cli.utils.cli import DownloadDisplay, console
 from all_data_cli.utils.http import download_http
 from all_data_cli.utils.s3 import download_s3_object, expand_s3_location
 
@@ -47,7 +41,7 @@ def submit_dataset_downloads(
     dataset_outdir: Path,
     http_ex: ThreadPoolExecutor,
     s3_ex: ThreadPoolExecutor,
-    progress: Progress,
+    display: DownloadDisplay,
 ) -> tuple[list[Future], list[DownloadFailure]]:
     """Submit one dataset's downloads to the shared pools.
 
@@ -106,13 +100,15 @@ def submit_dataset_downloads(
 
     # Seed total with what we already know: S3 sizes are exact and free.
     # HTTP totals get added as workers learn Content-Length (see on_size_known).
-    initial_total = sum(size for _, size in s3_objects)
-    task_id = progress.add_task(
+    # For HTTP-only datasets where Content-Length isn't sent on GET (e.g. CDN
+    # serves gzip+chunked), fall back to the curator-provided file_size_bytes.
+    initial_total = sum(size for _, size in s3_objects) or dataset.file_size_bytes
+    task_id = display.progress.add_task(
         f"{collection_slug}/{dataset.slug}",
         total=initial_total or None,
     )
-    on_bytes_downloaded = functools.partial(advance_task, progress, task_id)
-    on_size_known = functools.partial(grow_task_total, progress, task_id)
+    on_bytes_downloaded = functools.partial(display.advance_task, task_id)
+    on_size_known = functools.partial(display.grow_task_total, task_id)
 
     futures: list[Future] = [
         # S3 sizes are already accumulated into the task total at `expand_s3_location`
@@ -161,7 +157,7 @@ def download_collections(
                     ds_outdir,
                     http_ex,
                     s3_ex,
-                    display.progress,
+                    display,
                 )
                 for f in submission_failures:
                     display.record_failure(f)
