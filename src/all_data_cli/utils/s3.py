@@ -1,4 +1,5 @@
 import functools
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -9,7 +10,7 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
 from all_data_cli.models import DownloadFailure
-from all_data_cli.utils.cli import progress_bar_ctx, safe_join
+from all_data_cli.utils.cli import safe_join
 
 _S3_MULTIPART_SIZE = 16 * 1024 * 1024  # 16 MB
 _S3_MAX_CONCURRENCY = 8
@@ -95,7 +96,11 @@ def expand_s3_location(uri: str) -> list[str]:
 
 
 def download_s3_object(
-    uri: str, outdir: Path, collection_slug: str, dataset_slug: str
+    uri: str,
+    outdir: Path,
+    collection_slug: str,
+    dataset_slug: str,
+    on_bytes_downloaded: Callable[[int], None],
 ) -> DownloadFailure | None:
     """Download a single S3 object into outdir, preserving the full S3 key structure."""
     s3 = _make_s3_client()
@@ -107,16 +112,14 @@ def download_s3_object(
     # download never leaves a truncated file at outpath that looks complete.
     tmp = outpath.with_name(outpath.name + ".part")
     try:
-        total = s3.head_object(Bucket=bucket, Key=key)["ContentLength"]
         cfg = TransferConfig(
             multipart_threshold=_S3_MULTIPART_SIZE,
             multipart_chunksize=_S3_MULTIPART_SIZE,
             max_concurrency=_S3_MAX_CONCURRENCY,
         )
-        with progress_bar_ctx(total) as pbar:
-            S3Transfer(s3, cfg).download_file(
-                bucket, key, str(tmp), callback=lambda n: pbar.update(n)
-            )
+        S3Transfer(s3, cfg).download_file(
+            bucket, key, str(tmp), callback=on_bytes_downloaded
+        )
         tmp.replace(outpath)
         return None
     except (BotoCoreError, ClientError, OSError) as e:

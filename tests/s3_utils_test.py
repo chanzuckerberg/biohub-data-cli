@@ -11,6 +11,8 @@ from all_data_cli.utils.s3 import (
     s3_url_to_local_path,
 )
 
+_ignore_bytes = lambda _: None  # noqa: E731
+
 
 def _make_s3_mock(
     mocked_pages_under_dir: list[list[str]] | None = None,
@@ -229,7 +231,7 @@ def test_download_s3_object_success(tmp_path):
     ):
         mock_transfer.return_value.download_file.side_effect = fake_download
         result = download_s3_object(
-            "s3://bucket/prefix/file.h5ad", tmp_path, "coll", "ds"
+            "s3://bucket/prefix/file.h5ad", tmp_path, "coll", "ds", _ignore_bytes
         )
     assert result is None
     assert (tmp_path / "prefix" / "file.h5ad").exists()
@@ -246,7 +248,7 @@ def test_download_s3_object_records_failure(tmp_path):
     s3.head_object.side_effect = OSError("Access denied")
     with patch("all_data_cli.utils.s3._make_s3_client", return_value=s3):
         result = download_s3_object(
-            "s3://bucket/prefix/file.h5ad", tmp_path, "my-coll", "my-ds"
+            "s3://bucket/prefix/file.h5ad", tmp_path, "my-coll", "my-ds", _ignore_bytes
         )
     assert result is not None
     assert "file.h5ad" in result.url

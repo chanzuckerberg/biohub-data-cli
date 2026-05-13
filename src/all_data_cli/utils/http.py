@@ -1,9 +1,10 @@
 import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 
 import requests
 from all_data_cli.models import DownloadFailure
-from all_data_cli.utils.cli import progress_bar_ctx, safe_join
+from all_data_cli.utils.cli import safe_join
 
 _HTTP_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
@@ -29,7 +30,11 @@ def http_url_to_local_path(url: str, outdir: Path) -> Path:
 
 
 def download_http(
-    url: str, outdir: Path, collection_slug: str, dataset_slug: str
+    url: str,
+    outdir: Path,
+    collection_slug: str,
+    dataset_slug: str,
+    on_bytes_downloaded: Callable[[int], None],
 ) -> DownloadFailure | None:
     try:
         outpath = http_url_to_local_path(url, outdir)
@@ -48,13 +53,11 @@ def download_http(
     try:
         with requests.get(url, stream=True, timeout=60) as r:
             r.raise_for_status()
-            content_length = r.headers.get("Content-Length")
-            total = int(content_length) if content_length else None
-            with open(tmp, "wb") as f, progress_bar_ctx(total) as pbar:
+            with open(tmp, "wb") as f:
                 for chunk in r.iter_content(chunk_size=_HTTP_CHUNK_SIZE):
                     if chunk:
                         f.write(chunk)
-                        pbar.update(len(chunk))
+                        on_bytes_downloaded(len(chunk))
         tmp.replace(outpath)
         return None
     except (requests.RequestException, OSError) as e:

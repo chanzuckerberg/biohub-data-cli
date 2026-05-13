@@ -1,8 +1,20 @@
-import contextlib
-from collections.abc import Iterator
 from pathlib import Path
+from types import TracebackType
 
-from tqdm import tqdm
+from rich.console import Console, Group
+from rich.live import Live
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TaskProgressColumn,
+    TextColumn,
+)
+from rich.tree import Tree
+
+from all_data_cli.models import DownloadFailure
+
+console = Console()
 
 
 def safe_join(root: Path, *parts: str) -> Path:
@@ -14,10 +26,67 @@ def safe_join(root: Path, *parts: str) -> Path:
     return candidate
 
 
-@contextlib.contextmanager
-def progress_bar_ctx(total: int | None) -> Iterator[tqdm]:
-    pbar = tqdm(total=total, unit="B", unit_scale=True)
-    try:
-        yield pbar
-    finally:
-        pbar.close()
+def advance_task(progress: Progress, task_id, n: int) -> None:
+    progress.update(task_id, advance=n)
+
+
+def make_progress() -> Progress:
+    return Progress(
+        TextColumn("[bold]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        DownloadColumn(),
+        console=console,
+    )
+
+
+class DownloadDisplay:
+    """Owns the rich.Live region for the download flow.
+
+    Initial render shows only the progress bars. The first time `record_failure`
+    is called, the live region swaps to show a failures Tree below the bars.
+    Failures are grouped two levels deep: collection → dataset → one leaf per
+    failed URL.
+    """
+
+    def __init__(self) -> None:
+        self.progress = make_progress()
+        self.failures: list[DownloadFailure] = []
+        self._tree = Tree("[bold red]Failures[/bold red]")
+        # collection_slug -> its branch under the root tree. Memoized so multiple
+        # failures in the same collection don't create duplicate branches.
+        self._collection_branches: dict[str, Tree] = {}
+        # (collection_slug, dataset_slug) -> its branch under the collection's
+        # branch. Same memoization rationale, scoped per dataset.
+        self._dataset_branches: dict[tuple[str, str], Tree] = {}
+        self._live = Live(self.progress, console=console, refresh_per_second=4)
+
+    def __enter__(self) -> "DownloadDisplay":
+        self._live.__enter__()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None:
+        return self._live.__exit__(exc_type, exc, tb)
+
+    def record_failure(self, f: DownloadFailure) -> None:
+        if not self.failures:
+            self._live.update(Group(self.progress, self._tree))
+        self.failures.append(f)
+
+        coll_branch = self._collection_branches.get(f.collection_slug)
+        if coll_branch is None:
+            coll_branch = self._tree.add(f"[red]{f.collection_slug}[/red]")
+            self._collection_branches[f.collection_slug] = coll_branch
+
+        ds_key = (f.collection_slug, f.dataset_slug)
+        ds_branch = self._dataset_branches.get(ds_key)
+        if ds_branch is None:
+            ds_branch = coll_branch.add(f"[red]{f.dataset_slug}[/red]")
+            self._dataset_branches[ds_key] = ds_branch
+
+        ds_branch.add(f"{f.url} — {f.reason}")
