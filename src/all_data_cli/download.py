@@ -4,6 +4,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import click
+from rich.markup import escape
 
 from all_data_cli.models import Collection, Dataset, DownloadFailure
 from all_data_cli.utils.cli import DownloadDisplay, console
@@ -100,11 +101,10 @@ def submit_dataset_downloads(
 
     # Seed total with what we already know: S3 sizes are exact and free.
     # HTTP totals get added as workers learn Content-Length (see on_size_known).
-    # For HTTP-only datasets where Content-Length isn't sent on GET (e.g. CDN
-    # serves gzip+chunked), fall back to the curator-provided file_size_bytes.
+    # If no initial total, fall back to the curator-provided file_size_bytes.
     initial_total = sum(size for _, size in s3_objects) or dataset.file_size_bytes
     task_id = display.progress.add_task(
-        f"{collection_slug}/{dataset.slug}",
+        escape(f"{collection_slug}/{dataset.slug}"),
         total=initial_total or None,
     )
     on_bytes_downloaded = functools.partial(display.advance_task, task_id)

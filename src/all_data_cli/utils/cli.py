@@ -69,10 +69,23 @@ class DownloadDisplay:
         # that report Content-Length concurrently for the same dataset.
         self._total_lock = threading.Lock()
 
+    def __enter__(self) -> "DownloadDisplay":
+        self._live.__enter__()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None:
+        return self._live.__exit__(exc_type, exc, tb)
+
     def advance_task(self, task_id: TaskID, n: int) -> None:
         """Bump one Progress task by `n` bytes.
 
         The rare HTTP-without-Content-Length case may show >100% in the percentage / bytes columns.
+        No lock needed, since rich takes care of concurrent updates.
         """
         self.progress.update(task_id, advance=n)
 
@@ -89,19 +102,8 @@ class DownloadDisplay:
                 return
             self.progress.update(task_id, total=(task.total or 0) + n)
 
-    def __enter__(self) -> "DownloadDisplay":
-        self._live.__enter__()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> bool | None:
-        return self._live.__exit__(exc_type, exc, tb)
-
     def record_failure(self, f: DownloadFailure) -> None:
+        """Append a failure and mutate the failures tree. Not thread-safe — call from the main thread only."""
         if not self.failures:
             self._live.update(Group(self.progress, self._tree))
         self.failures.append(f)
