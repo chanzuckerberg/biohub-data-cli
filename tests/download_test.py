@@ -162,7 +162,7 @@ def test_submit_dataset_downloads_routes_and_collects_submission_failures(tmp_pa
         patch("all_data_cli.download.download_s3_object") as mock_s3,
         patch(
             "all_data_cli.download.expand_s3_location",
-            return_value=["s3://bucket/b.h5ad"],
+            return_value=[("s3://bucket/b.h5ad", 100)],
         ),
     ):
         mock_http.return_value = None
@@ -220,11 +220,11 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
         }
     )
     expanded = [
-        "s3://bucket/zarr-store/.zarray",
-        "s3://bucket/zarr-store/.zattrs",
-        "s3://bucket/zarr-store/0/0/0",
-        "s3://bucket/zarr-store/0/0/1",
-        "s3://bucket/zarr-store/0/0/2",
+        ("s3://bucket/zarr-store/.zarray", 100),
+        ("s3://bucket/zarr-store/.zattrs", 200),
+        ("s3://bucket/zarr-store/0/0/0", 300),
+        ("s3://bucket/zarr-store/0/0/1", 400),
+        ("s3://bucket/zarr-store/0/0/2", 500),
     ]
 
     with (
@@ -244,7 +244,7 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
     assert submission_failures == []
     assert len(futures) == len(expanded)
     submitted_uris = {call.args[0] for call in mock_s3.call_args_list}
-    assert submitted_uris == set(expanded)
+    assert submitted_uris == {uri for uri, _ in expanded}
 
 
 def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path):
@@ -415,7 +415,8 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
             "urls": ["s3://bucket/zarr/"],
         }
     )
-    expanded = [f"s3://bucket/zarr/chunk-{i}" for i in range(5)]
+    # Five chunks of 1000 bytes each → orchestrator seeds total=5000 from listing.
+    expanded = [(f"s3://bucket/zarr/chunk-{i}", 1000) for i in range(5)]
     progress = make_progress()
 
     with (
@@ -436,6 +437,7 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
     assert len(progress.tasks) == 1
     task = progress.tasks[0]
     assert task.description == "coll/matrix-zarr"
+    # Total comes from summed S3 sizes (5 × 1000), not from dataset.file_size_bytes.
     assert task.total == 5000
     # All five workers got the same on_bytes_downloaded callable (positional arg 4).
     advances = {call.args[4] for call in mock_s3.call_args_list}

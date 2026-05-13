@@ -15,6 +15,11 @@ from all_data_cli.utils.s3 import (
 def _ignore_bytes(_: int) -> None: ...
 
 
+# Every mocked S3 object in this test file reports this fake size; expected
+# tuples use it so we can verify expand_s3_location wires Size through.
+_MOCK_OBJECT_SIZE = 100
+
+
 def _make_s3_mock(
     mocked_pages_under_dir: list[list[str]] | None = None,
     head_exists: bool = False,
@@ -22,23 +27,24 @@ def _make_s3_mock(
     head_side_effect: Exception | None = None,
 ) -> MagicMock:
     """S3 client mock. `mocked_pages_under_dir` is the paginator output: a list
-    of pages, each a list of object keys. `head_object` succeeds if
-    `head_exists` else raises 404. Either side effect can be supplied to
-    override the configured return."""
+    of pages, each a list of object keys. Every listed object gets the same
+    fake `Size` = `_MOCK_OBJECT_SIZE`. `head_object` succeeds with that same
+    size if `head_exists` else raises 404. Either side effect can be supplied
+    to override the configured return."""
     s3 = MagicMock()
     paginator = MagicMock()
     if paginate_side_effect is not None:
         paginator.paginate.side_effect = paginate_side_effect
     else:
         paginator.paginate.return_value = [
-            {"Contents": [{"Key": k} for k in page]}
+            {"Contents": [{"Key": k, "Size": _MOCK_OBJECT_SIZE} for k in page]}
             for page in (mocked_pages_under_dir or [[]])
         ]
     s3.get_paginator.return_value = paginator
     if head_side_effect is not None:
         s3.head_object.side_effect = head_side_effect
     elif head_exists:
-        s3.head_object.return_value = {"ContentLength": 1}
+        s3.head_object.return_value = {"ContentLength": _MOCK_OBJECT_SIZE}
     else:
         s3.head_object.side_effect = ClientError(
             {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
@@ -51,7 +57,7 @@ class ReturnCase(NamedTuple):
     uri: str
     mocked_pages_under_dir: list[list[str]]
     head_exists: bool
-    expected_uris: list[str]
+    expected_uris: list[str]  # tuples built from these + _MOCK_OBJECT_SIZE
     list_paginator_called_with: str
     head_called_with: str | None  # None means HEAD must not be called
 
@@ -121,9 +127,8 @@ def test_expand_s3_location_returns():
         )
         with patch("all_data_cli.utils.s3._make_s3_client", return_value=s3):
             result = expand_s3_location(case.uri)
-        assert result == case.expected_uris, (
-            f"[{case.id}] expected {case.expected_uris}, got {result}"
-        )
+        expected = [(uri, _MOCK_OBJECT_SIZE) for uri in case.expected_uris]
+        assert result == expected, f"[{case.id}] expected {expected}, got {result}"
         s3.get_paginator.assert_called_once_with("list_objects_v2")
         s3.get_paginator.return_value.paginate.assert_called_once_with(
             Bucket="bucket", Prefix=case.list_paginator_called_with
@@ -245,11 +250,14 @@ def test_download_s3_object_success(tmp_path):
 
 
 def test_download_s3_object_records_failure(tmp_path):
-    s3 = MagicMock()
-    s3.head_object.side_effect = OSError("Access denied")
-    with patch("all_data_cli.utils.s3._make_s3_client", return_value=s3):
+    with patch("all_data_cli.utils.s3.S3Transfer") as mock_transfer:
+        mock_transfer.return_value.download_file.side_effect = OSError("Access denied")
         result = download_s3_object(
-            "s3://bucket/prefix/file.h5ad", tmp_path, "my-coll", "my-ds", _ignore_bytes
+            "s3://bucket/prefix/file.h5ad",
+            tmp_path,
+            "my-coll",
+            "my-ds",
+            _ignore_bytes,
         )
     assert result is not None
     assert "file.h5ad" in result.url

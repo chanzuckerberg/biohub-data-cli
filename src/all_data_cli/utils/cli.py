@@ -3,6 +3,7 @@ from types import TracebackType
 
 from rich.console import Console, Group
 from rich.live import Live
+from rich.markup import escape
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -27,9 +28,32 @@ def safe_join(root: Path, *parts: str) -> Path:
     return candidate
 
 
+def _find_task(progress: Progress, task_id: TaskID):
+    # Linear scan is okay for now, given there is one Task per dataset and we
+    # don't expect to download many datasets. Revisit when supporting more datasets.
+    # Used by http download only. 
+    return next((t for t in progress.tasks if t.id == task_id), None)
+
+
 def advance_task(progress: Progress, task_id: TaskID, n: int) -> None:
-    """Bump one Progress task by `n` bytes."""
+    """Bump one Progress task by `n` bytes.
+
+    The rare HTTP-without-Content-Length case may show >100% in the percentage / bytes columns.
+    """
     progress.update(task_id, advance=n)
+
+
+def grow_task_total(progress: Progress, task_id: TaskID, n: int) -> None:
+    """Add `n` bytes to one task's total.
+
+    Workers call this once when they learn a file's size (e.g. HTTP
+    Content-Length on GET response). S3 sizes are seeded at task-creation
+    time from list_objects_v2, so S3 workers don't call this.
+    """
+    task = _find_task(progress, task_id)
+    if task is None:
+        return
+    progress.update(task_id, total=(task.total or 0) + n)
 
 
 def make_progress() -> Progress:
@@ -86,13 +110,13 @@ class DownloadDisplay:
 
         coll_branch = self._collection_branches.get(f.collection_slug)
         if coll_branch is None:
-            coll_branch = self._tree.add(f"[red]{f.collection_slug}[/red]")
+            coll_branch = self._tree.add(f"[red]{escape(f.collection_slug)}[/red]")
             self._collection_branches[f.collection_slug] = coll_branch
 
         ds_key = (f.collection_slug, f.dataset_slug)
         ds_branch = self._dataset_branches.get(ds_key)
         if ds_branch is None:
-            ds_branch = coll_branch.add(f"[red]{f.dataset_slug}[/red]")
+            ds_branch = coll_branch.add(f"[red]{escape(f.dataset_slug)}[/red]")
             self._dataset_branches[ds_key] = ds_branch
 
-        ds_branch.add(f"{f.url} — {f.reason}")
+        ds_branch.add(f"{escape(f.url)} — {escape(f.reason)}")

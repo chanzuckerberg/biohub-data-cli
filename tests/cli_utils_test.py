@@ -4,7 +4,13 @@ import pytest
 from rich.console import Group
 
 from all_data_cli.models import DownloadFailure
-from all_data_cli.utils.cli import DownloadDisplay, safe_join
+from all_data_cli.utils.cli import (
+    DownloadDisplay,
+    advance_task,
+    grow_task_total,
+    make_progress,
+    safe_join,
+)
 
 
 # ── safe_join ────────────────────────────────────────────────────────────────
@@ -113,3 +119,63 @@ def test_leaf_label_contains_url_and_reason():
     leaf_label = str(ds_branch.children[0].label)
     assert "s3://bucket/key" in leaf_label
     assert "403 Forbidden" in leaf_label
+
+
+def test_failure_fields_with_rich_markup_characters_render_literally():
+    """Brackets in error messages (e.g. '[Errno 13]') must not be parsed as rich markup."""
+    d = DownloadDisplay()
+    d.record_failure(
+        _failure(
+            coll="coll-[a]",
+            ds="ds-[1]",
+            url="s3://bucket/key?x=[y]",
+            reason="boto error [Errno 13] Permission denied",
+        )
+    )
+    coll_branch = d._collection_branches["coll-[a]"]
+    ds_branch = d._dataset_branches[("coll-[a]", "ds-[1]")]
+    leaf_label = str(ds_branch.children[0].label)
+
+    # Render each label through a Console with a recorder to assert the bracket
+    # content survives as literal text instead of being eaten as markup.
+    from rich.console import Console
+
+    recorder = Console(record=True, width=200, file=None)
+    recorder.print(coll_branch.label)
+    recorder.print(ds_branch.label)
+    recorder.print(leaf_label)
+    rendered = recorder.export_text()
+    assert "coll-[a]" in rendered
+    assert "ds-[1]" in rendered
+    assert "s3://bucket/key?x=[y]" in rendered
+    assert "[Errno 13]" in rendered
+
+
+# ── advance_task / grow_task_total ──────────────────────────────────────────
+
+
+def test_advance_task_bumps_completed():
+    progress = make_progress()
+    task_id = progress.add_task("t", total=100)
+    advance_task(progress, task_id, 30)
+    advance_task(progress, task_id, 40)
+    task = next(t for t in progress.tasks if t.id == task_id)
+    assert task.completed == 70
+
+
+def test_grow_task_total_adds_to_existing_total():
+    """Used when an HTTP worker learns Content-Length after the task is created."""
+    progress = make_progress()
+    task_id = progress.add_task("t", total=1000)  # seeded from S3 sizes
+    grow_task_total(progress, task_id, 250)  # HTTP file is 250 bytes
+    task = next(t for t in progress.tasks if t.id == task_id)
+    assert task.total == 1250
+
+
+def test_grow_task_total_starts_from_none():
+    """If the task was created with total=None (no known size), grow from 0."""
+    progress = make_progress()
+    task_id = progress.add_task("t", total=None)
+    grow_task_total(progress, task_id, 500)
+    task = next(t for t in progress.tasks if t.id == task_id)
+    assert task.total == 500

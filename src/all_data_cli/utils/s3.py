@@ -38,14 +38,14 @@ def s3_url_to_local_path(uri: str, outdir: Path) -> Path:
     return safe_join(outdir, *key.split("/"))
 
 
-def expand_s3_location(uri: str) -> list[str]:
-    """Expand a URI into a list of individual S3 object URIs.
+def expand_s3_location(uri: str) -> list[tuple[str, int]]:
+    """Expand a URI into a list of (object URI, size in bytes) tuples.
 
     Resolution rule — folder wins:
     1. List under `<key>/`. If anything is there, return all of those objects;
        the caller's key is treated as a folder regardless of whether a bare
        object with the same name also exists.
-    2. Otherwise, HEAD `<key>` and return [uri] if it exists.
+    2. Otherwise, HEAD `<key>` and return [(uri, size)] if it exists.
     3. Otherwise raise RuntimeError.
 
     Corner cases handling:
@@ -66,18 +66,20 @@ def expand_s3_location(uri: str) -> list[str]:
     # List under <key>/ — normalizes trailing slashes and excludes string-prefix
     # false positives like `<key>.bak` at the S3 API level.
     list_prefix = key.rstrip("/") + "/" if key else ""
-    raw_keys: list[str] = []
+    raw_keys_and_size: list[tuple[str, int]] = []
     paginator = s3.get_paginator("list_objects_v2")
     try:
         for page in paginator.paginate(Bucket=bucket, Prefix=list_prefix):
             for obj in page.get("Contents", []):
                 if not obj["Key"].endswith("/"):  # skip directory markers
-                    raw_keys.append(obj["Key"])
+                    raw_keys_and_size.append(
+                        (f"s3://{bucket}/{obj['Key']}", obj["Size"])
+                    )
     except (BotoCoreError, ClientError) as e:
         raise RuntimeError(f"Failed to list S3 objects at {uri}: {e}") from e
 
-    if raw_keys:
-        return [f"s3://{bucket}/{k}" for k in raw_keys]
+    if raw_keys_and_size:
+        return raw_keys_and_size
 
     # Nothing under the prefix. If the caller asked for a folder explicitly
     # (trailing slash) or the whole bucket (empty key), there's no fallback.
@@ -85,14 +87,14 @@ def expand_s3_location(uri: str) -> list[str]:
         raise RuntimeError(f"No objects found at {uri}")
 
     try:
-        s3.head_object(Bucket=bucket, Key=key)
+        head = s3.head_object(Bucket=bucket, Key=key)
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
             raise RuntimeError(f"No object found at {uri}") from None
         raise RuntimeError(f"Failed to resolve S3 object at {uri}: {e}") from e
     except BotoCoreError as e:
         raise RuntimeError(f"Failed to resolve S3 object at {uri}: {e}") from e
-    return [f"s3://{bucket}/{key}"]
+    return [(f"s3://{bucket}/{key}", head["ContentLength"])]
 
 
 def download_s3_object(
@@ -102,7 +104,12 @@ def download_s3_object(
     dataset_slug: str,
     on_bytes_downloaded: Callable[[int], None],
 ) -> DownloadFailure | None:
-    """Download a single S3 object into outdir, preserving the full S3 key structure."""
+    """Download a single S3 object into outdir, preserving the full S3 key structure.
+
+    No `on_size_known` callback here — S3 sizes are already accumulated into
+    the task total at `expand_s3_location` time (from `list_objects_v2` /
+    `head_object`), so the worker has nothing to report.
+    """
     s3 = _make_s3_client()
     parsed = urlparse(uri)
     bucket, key = parsed.netloc, parsed.path.lstrip("/")
@@ -112,7 +119,6 @@ def download_s3_object(
     # download never leaves a truncated file at outpath that looks complete.
     tmp = outpath.with_name(outpath.name + ".part")
     try:
-        s3.head_object(Bucket=bucket, Key=key)
         cfg = TransferConfig(
             multipart_threshold=_S3_MULTIPART_SIZE,
             multipart_chunksize=_S3_MULTIPART_SIZE,

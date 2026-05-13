@@ -7,7 +7,12 @@ import click
 from rich.progress import Progress
 
 from all_data_cli.models import Collection, Dataset, DownloadFailure
-from all_data_cli.utils.cli import DownloadDisplay, advance_task, console
+from all_data_cli.utils.cli import (
+    DownloadDisplay,
+    advance_task,
+    console,
+    grow_task_total,
+)
 from all_data_cli.utils.http import download_http
 from all_data_cli.utils.s3 import download_s3_object, expand_s3_location
 
@@ -79,9 +84,10 @@ def submit_dataset_downloads(
             )
         )
 
-    # Expand S3 prefixes into individual object URIs before submitting,
-    # so each object is a separate future and can be downloaded in parallel.
-    s3_objects: list[str] = []
+    # Expand S3 prefixes into (uri, size) pairs so we can both submit each
+    # object as its own future and seed the progress task with the actual
+    # byte total directly from list_objects_v2 / head_object.
+    s3_objects: list[tuple[str, int]] = []
     for uri in s3_uris:
         try:
             s3_objects.extend(expand_s3_location(uri))
@@ -98,22 +104,28 @@ def submit_dataset_downloads(
     if not s3_objects and not http_urls:
         return [], submission_failures
 
+    # Seed total with what we already know: S3 sizes are exact and free.
+    # HTTP totals get added as workers learn Content-Length (see on_size_known).
+    initial_total = sum(size for _, size in s3_objects)
     task_id = progress.add_task(
         f"{collection_slug}/{dataset.slug}",
-        total=dataset.file_size_bytes,
+        total=initial_total or None,
     )
     on_bytes_downloaded = functools.partial(advance_task, progress, task_id)
+    on_size_known = functools.partial(grow_task_total, progress, task_id)
 
     futures: list[Future] = [
+        # S3 sizes are already accumulated into the task total at `expand_s3_location`
+        # time, so no need to call `on_size_known`.
         s3_ex.submit(
             download_s3_object,
-            obj,
+            obj_uri,
             dataset_outdir,
             collection_slug,
             dataset.slug,
             on_bytes_downloaded,
         )
-        for obj in s3_objects
+        for obj_uri, _ in s3_objects
     ] + [
         http_ex.submit(
             download_http,
@@ -122,6 +134,7 @@ def submit_dataset_downloads(
             collection_slug,
             dataset.slug,
             on_bytes_downloaded,
+            on_size_known,
         )
         for url in http_urls
     ]

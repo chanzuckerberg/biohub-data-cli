@@ -35,7 +35,16 @@ def download_http(
     collection_slug: str,
     dataset_slug: str,
     on_bytes_downloaded: Callable[[int], None],
+    on_size_known: Callable[[int], None],
 ) -> DownloadFailure | None:
+    """Download `url` to `outdir/<filename>`.
+
+    `on_size_known(N)` fires once if the server's GET response includes a
+    `Content-Length` header, letting the orchestrator grow the task's total
+    in lockstep with what we actually learn about the file. Servers that
+    omit `Content-Length` (chunked encoding) simply skip that step.
+    `on_bytes_downloaded(N)` fires per chunk during streaming.
+    """
     try:
         outpath = http_url_to_local_path(url, outdir)
     except ValueError as e:
@@ -53,6 +62,12 @@ def download_http(
     try:
         with requests.get(url, stream=True, timeout=60) as r:
             r.raise_for_status()
+            content_length = r.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    on_size_known(int(content_length))
+                except ValueError:
+                    pass  # malformed header — fall through, just no total update
             with open(tmp, "wb") as f:
                 for chunk in r.iter_content(chunk_size=_HTTP_CHUNK_SIZE):
                     if chunk:
