@@ -1,3 +1,4 @@
+import functools
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,7 +15,11 @@ _S3_MULTIPART_SIZE = 16 * 1024 * 1024  # 16 MB
 _S3_MAX_CONCURRENCY = 8
 
 
+@functools.cache
 def _make_s3_client():
+    # Cached so all workers share one client (boto3 clients are thread-safe).
+    # Constructing a fresh client per call adds non-trivial overhead when
+    # downloading many small objects (e.g. Zarr chunks).
     # Unsigned access — only support public buckets. Private buckets will raise ClientError.
     return boto3.client("s3", config=BotoConfig(signature_version=UNSIGNED))
 
@@ -90,7 +95,7 @@ def expand_s3_location(uri: str) -> list[str]:
 
 
 def download_s3_object(
-    uri: str, outdir: Path, dataset_name: str
+    uri: str, outdir: Path, collection_slug: str, dataset_slug: str
 ) -> DownloadFailure | None:
     """Download a single S3 object into outdir, preserving the full S3 key structure."""
     s3 = _make_s3_client()
@@ -116,4 +121,9 @@ def download_s3_object(
         return None
     except (BotoCoreError, ClientError, OSError) as e:
         tmp.unlink(missing_ok=True)
-        return DownloadFailure(dataset_name=dataset_name, url=uri, reason=str(e))
+        return DownloadFailure(
+            collection_slug=collection_slug,
+            dataset_slug=dataset_slug,
+            url=uri,
+            reason=str(e),
+        )

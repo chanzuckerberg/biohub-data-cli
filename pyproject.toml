@@ -17,6 +17,9 @@ dependencies = [
     "rich>=13.0.0",
 ]
 
+[project.scripts]
+bhp = "all_data_cli.main:cli"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

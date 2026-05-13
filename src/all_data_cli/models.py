@@ -3,27 +3,29 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 
 
+class Dataset(BaseModel):
+    """A single downloadable unit."""
+
+    id: str
+    slug: str
+    title: str
+    file_format: str
+    file_size_bytes: int | None = None
+    urls: list[str]
+
+
+class Collection(BaseModel):
+    """A grouping of datasets."""
+
+    id: str
+    slug: str
+    title: str
+    datasets: list[Dataset]
+
+
 @dataclass
 class DownloadFailure:
-    dataset_name: str
+    collection_slug: str
+    dataset_slug: str
     url: str
     reason: str
-
-
-class LocationInfo(BaseModel):
-    url: str
-    size: int | None = None
-
-
-class DownloadInfo(BaseModel):
-    locations: list[LocationInfo]
-    total_size: int | None = None
-    cli_download: bool
-    direct_download: bool
-
-
-class Dataset(BaseModel):
-    id: str
-    name: str
-    namespace: str
-    download_info: DownloadInfo
