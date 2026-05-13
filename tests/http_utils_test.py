@@ -2,7 +2,8 @@ from unittest.mock import MagicMock, patch
 
 from all_data_cli.utils.http import download_http, http_url_to_local_path
 
-_ignore_bytes = lambda _: None  # noqa: E731
+
+def _ignore_bytes(_: int) -> None: ...
 
 
 def test_http_url_to_local_path(tmp_path):

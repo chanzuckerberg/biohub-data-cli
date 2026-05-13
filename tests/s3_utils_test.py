@@ -11,7 +11,8 @@ from all_data_cli.utils.s3 import (
     s3_url_to_local_path,
 )
 
-_ignore_bytes = lambda _: None  # noqa: E731
+
+def _ignore_bytes(_: int) -> None: ...
 
 
 def _make_s3_mock(

@@ -7,6 +7,7 @@ from rich.progress import (
     BarColumn,
     DownloadColumn,
     Progress,
+    TaskID,
     TaskProgressColumn,
     TextColumn,
 )
@@ -26,11 +27,16 @@ def safe_join(root: Path, *parts: str) -> Path:
     return candidate
 
 
-def advance_task(progress: Progress, task_id, n: int) -> None:
+def advance_task(progress: Progress, task_id: TaskID, n: int) -> None:
+    """Bump one Progress task by `n` bytes."""
     progress.update(task_id, advance=n)
 
 
 def make_progress() -> Progress:
+    """A Progress configured with the column set we want for downloads:
+    label · bar · percentage · "bytes-done / total". Single instance shared
+    across all dataset tasks so rich can serialize terminal writes.
+    """
     return Progress(
         TextColumn("[bold]{task.description}"),
         BarColumn(),

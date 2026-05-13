@@ -112,6 +112,7 @@ def download_s3_object(
     # download never leaves a truncated file at outpath that looks complete.
     tmp = outpath.with_name(outpath.name + ".part")
     try:
+        s3.head_object(Bucket=bucket, Key=key)
         cfg = TransferConfig(
             multipart_threshold=_S3_MULTIPART_SIZE,
             multipart_chunksize=_S3_MULTIPART_SIZE,
