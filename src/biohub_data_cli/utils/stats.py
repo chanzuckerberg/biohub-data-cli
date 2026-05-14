@@ -20,13 +20,13 @@ def get_collections_stats(
     result: list[tuple[Collection, list[DatasetStats]]] = []
     total_datasets = sum(len(c.datasets) for c in collections)
     done = 0
-    with console.status("Resolving S3 sizes…") as status:
+    with console.status("Resolving collections stats…") as status:
         for collection in collections:
             rows: list[DatasetStats] = []
             for dataset in collection.datasets:
                 done += 1
                 status.update(
-                    f"Resolving S3 sizes… ({done}/{total_datasets}) "
+                    f"Resolving collections stats… ({done}/{total_datasets}) "
                     f"{collection.slug}/{dataset.slug}"
                 )
                 s3_uris = [u for u in dataset.urls if u.startswith("s3://")]
