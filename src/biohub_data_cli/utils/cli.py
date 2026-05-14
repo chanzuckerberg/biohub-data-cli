@@ -3,7 +3,6 @@ from pathlib import Path
 from types import TracebackType
 
 from rich.console import Console, Group
-from rich.filesize import decimal
 from rich.live import Live
 from rich.markup import escape
 from rich.progress import (
@@ -19,11 +18,6 @@ from rich.tree import Tree
 from biohub_data_cli.models import DownloadFailure
 
 console = Console()
-
-
-def format_bytes(n: int) -> str:
-    """Decimal byte formatting (1 KB = 1000 B) matching rich's DownloadColumn."""
-    return decimal(n)
 
 
 def safe_join(root: Path, *parts: str) -> Path:

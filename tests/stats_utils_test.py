@@ -43,7 +43,7 @@ def test_estimate_size_summary_all_sized():
 def test_estimate_size_summary_partial_sizing():
     result = estimate_size_summary([_collection_with_sizes([1024, None])])
     assert "estimated" in result
-    assert "1 dataset(s) unsized" in result
+    assert "size unknown for 1/2 dataset(s)" in result
 
 
 def test_estimate_size_summary_all_unsized():

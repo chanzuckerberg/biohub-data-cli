@@ -1,8 +1,9 @@
+from rich.filesize import decimal as format_bytes
 from rich.markup import escape
 from rich.tree import Tree
 
 from biohub_data_cli.models import Collection, DatasetStats, DryRunAggregate
-from biohub_data_cli.utils.cli import console, format_bytes
+from biohub_data_cli.utils.cli import console
 from biohub_data_cli.utils.s3 import resolve_s3_uris
 
 
@@ -17,24 +18,34 @@ def get_collections_stats(
     since we don't expect HTTP URLs in OPS data.
     """
     result: list[tuple[Collection, list[DatasetStats]]] = []
-    for collection in collections:
-        rows: list[DatasetStats] = []
-        for dataset in collection.datasets:
-            s3_uris = [u for u in dataset.urls if u.startswith("s3://")]
-            n_http = sum(
-                1 for u in dataset.urls if u.startswith(("http://", "https://"))
-            )
-            objects, failures = resolve_s3_uris(collection.slug, dataset.slug, s3_uris)
-            rows.append(
-                DatasetStats(
-                    collection_slug=collection.slug,
-                    dataset_slug=dataset.slug,
-                    total_bytes=sum(size for _, size in objects),
-                    n_failed_uris=len(failures),
-                    n_http_urls_skipped=n_http,
+    total_datasets = sum(len(c.datasets) for c in collections)
+    done = 0
+    with console.status("Resolving S3 sizes…") as status:
+        for collection in collections:
+            rows: list[DatasetStats] = []
+            for dataset in collection.datasets:
+                done += 1
+                status.update(
+                    f"Resolving S3 sizes… ({done}/{total_datasets}) "
+                    f"{collection.slug}/{dataset.slug}"
                 )
-            )
-        result.append((collection, rows))
+                s3_uris = [u for u in dataset.urls if u.startswith("s3://")]
+                n_http = sum(
+                    1 for u in dataset.urls if u.startswith(("http://", "https://"))
+                )
+                objects, failures = resolve_s3_uris(
+                    collection.slug, dataset.slug, s3_uris
+                )
+                rows.append(
+                    DatasetStats(
+                        collection_slug=collection.slug,
+                        dataset_slug=dataset.slug,
+                        total_bytes=sum(size for _, size in objects),
+                        n_failed_uris=len(failures),
+                        n_http_urls_skipped=n_http,
+                    )
+                )
+            result.append((collection, rows))
     return result
 
 
@@ -52,7 +63,9 @@ def estimate_size_summary(collections: list[Collection]) -> str:
     total = format_bytes(sum(sized))
     n_unsized = len(sizes) - len(sized)
     if n_unsized:
-        return f"~{total} estimated, {n_unsized} dataset(s) unsized"
+        return (
+            f"~{total} estimated (size unknown for {n_unsized}/{len(sizes)} dataset(s))"
+        )
     return f"~{total} estimated"
 
 
@@ -81,12 +94,14 @@ def print_dry_run_summary(
     for collection, stats in stats_by_collection:
         tree = Tree(f"[bold]{escape(collection.slug)}[/bold]")
         for s in stats:
-            warnings: list[str] = []
+            dataset_warnings: list[str] = []
             if s.n_failed_uris:
-                warnings.append(f"partial ({s.n_failed_uris} size lookup(s) failed)")
+                dataset_warnings.append(
+                    f"partial ({s.n_failed_uris} size lookup(s) failed)"
+                )
             if s.n_http_urls_skipped:
-                warnings.append("contains HTTP URLs that are not sized")
-            warning_str = "".join(f" [yellow]· {w}[/yellow]" for w in warnings)
+                dataset_warnings.append("contains HTTP URLs that are not sized")
+            warning_str = "".join(f" [yellow]· {w}[/yellow]" for w in dataset_warnings)
             tree.add(
                 f"{escape(s.dataset_slug)} · {format_bytes(s.total_bytes)}{warning_str}"
             )
@@ -98,13 +113,13 @@ def print_dry_run_summary(
         f"{format_bytes(aggregate.total_bytes)}"
     )
 
-    warnings: list[str] = []
+    total_warnings: list[str] = []
     if aggregate.n_failed_uris:
-        warnings.append(f"{aggregate.n_failed_uris} lookup(s) failed")
+        total_warnings.append(f"{aggregate.n_failed_uris} lookup(s) failed")
     if aggregate.n_http_urls_skipped:
-        warnings.append("HTTP URLs are not sized")
-    if warnings:
+        total_warnings.append("HTTP URLs are not sized")
+    if total_warnings:
         console.print(
             f"[yellow]Warning: total is an underestimate, since "
-            f"{' and '.join(warnings)}.[/yellow]"
+            f"{' and '.join(total_warnings)}.[/yellow]"
         )

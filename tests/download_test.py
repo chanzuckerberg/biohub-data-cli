@@ -500,9 +500,7 @@ def test_dry_run_prints_summary_and_does_not_download(tmp_path):
     # S3 dataset (matrix-b, sized at 512 from the mocked expansion).
     assert "matrix-a" in result.output
     assert "matrix-b" in result.output
-    assert (
-        "512" in result.output
-    )  # rich.filesize.decimal renders "512 bytes" or similar
+    assert "512 bytes" in result.output
 
 
 def test_dry_run_exits_nonzero_when_size_lookups_fail(tmp_path):
