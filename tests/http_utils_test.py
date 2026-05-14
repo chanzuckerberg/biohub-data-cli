@@ -43,7 +43,9 @@ def test_download_http_success(tmp_path):
 
 
 def test_download_http_records_failure(tmp_path):
-    with patch("biohub_data_cli.utils.http.requests.get", side_effect=OSError("timeout")):
+    with patch(
+        "biohub_data_cli.utils.http.requests.get", side_effect=OSError("timeout")
+    ):
         result = download_http(
             "https://example.com/file.h5ad",
             tmp_path,

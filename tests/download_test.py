@@ -228,7 +228,9 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
     ]
 
     with (
-        patch("biohub_data_cli.download.download_s3_object", return_value=None) as mock_s3,
+        patch(
+            "biohub_data_cli.download.download_s3_object", return_value=None
+        ) as mock_s3,
         patch("biohub_data_cli.download.expand_s3_location", return_value=expanded),
     ):
         with (
@@ -420,7 +422,9 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
     display = DownloadDisplay()
 
     with (
-        patch("biohub_data_cli.download.download_s3_object", return_value=None) as mock_s3,
+        patch(
+            "biohub_data_cli.download.download_s3_object", return_value=None
+        ) as mock_s3,
         patch("biohub_data_cli.download.expand_s3_location", return_value=expanded),
     ):
         with (
