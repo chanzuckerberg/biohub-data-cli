@@ -40,8 +40,8 @@ def submit_dataset_downloads(
     collection_slug: str,
     dataset: Dataset,
     dataset_outdir: Path,
-    http_ex: ThreadPoolExecutor,
-    s3_ex: ThreadPoolExecutor,
+    http_pool: ThreadPoolExecutor,
+    s3_pool: ThreadPoolExecutor,
     display: DownloadDisplay,
 ) -> tuple[list[Future], list[DownloadFailure]]:
     """Submit one dataset's downloads to the shared pools.
@@ -113,7 +113,7 @@ def submit_dataset_downloads(
     futures: list[Future] = [
         # S3 sizes are already accumulated into the task total at `expand_s3_location`
         # time, so no need to call `on_size_known`.
-        s3_ex.submit(
+        s3_pool.submit(
             download_s3_object,
             obj_uri,
             dataset_outdir,
@@ -123,7 +123,7 @@ def submit_dataset_downloads(
         )
         for obj_uri, _ in s3_objects
     ] + [
-        http_ex.submit(
+        http_pool.submit(
             download_http,
             url,
             dataset_outdir,
@@ -145,8 +145,8 @@ def download_collections(
 
     with (
         DownloadDisplay() as display,
-        ThreadPoolExecutor(max_workers=_HTTP_MAX_WORKERS) as http_ex,
-        ThreadPoolExecutor(max_workers=_S3_MAX_WORKERS) as s3_ex,
+        ThreadPoolExecutor(max_workers=_HTTP_MAX_WORKERS) as http_pool,
+        ThreadPoolExecutor(max_workers=_S3_MAX_WORKERS) as s3_pool,
     ):
         for collection in collections:
             for dataset in collection.datasets:
@@ -155,8 +155,8 @@ def download_collections(
                     collection.slug,
                     dataset,
                     ds_outdir,
-                    http_ex,
-                    s3_ex,
+                    http_pool,
+                    s3_pool,
                     display,
                 )
                 for f in submission_failures:
@@ -169,8 +169,8 @@ def download_collections(
                 if result is not None:
                     display.record_failure(result)
         except KeyboardInterrupt:
-            http_ex.shutdown(wait=False, cancel_futures=True)
-            s3_ex.shutdown(wait=False, cancel_futures=True)
+            http_pool.shutdown(wait=False, cancel_futures=True)
+            s3_pool.shutdown(wait=False, cancel_futures=True)
             raise
 
     return display.failures

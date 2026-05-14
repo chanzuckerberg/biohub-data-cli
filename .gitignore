@@ -45,3 +45,6 @@ htmlcov/
 
 # Linting
 .ruff_cache/
+
+# Claude Code (local, not shared)
+.claude/settings.local.json
