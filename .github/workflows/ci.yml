@@ -40,4 +40,4 @@ jobs:
         run: uv sync
 
       - name: Run tests with coverage
-        run: uv run pytest -v tests/ --cov=data_cli --cov-report=term-missing
+        run: uv run pytest -v tests/ --cov=biohub_data_cli --cov-report=term-missing
