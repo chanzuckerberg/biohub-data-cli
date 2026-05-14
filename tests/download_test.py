@@ -6,14 +6,14 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from all_data_cli.download import (
+from data_cli.download import (
     download_collections,
     fetch_collection,
     submit_dataset_downloads,
 )
-from all_data_cli.utils.cli import DownloadDisplay
-from all_data_cli.main import cli
-from all_data_cli.models import Collection, Dataset, DownloadFailure
+from data_cli.utils.cli import DownloadDisplay
+from data_cli.main import cli
+from data_cli.models import Collection, Dataset, DownloadFailure
 
 MOCK_COLLECTION = Collection.model_validate(
     {
@@ -46,14 +46,14 @@ MOCK_COLLECTION = Collection.model_validate(
 
 
 def test_fetch_collection_raises_when_no_fixtures_dir(monkeypatch):
-    monkeypatch.delenv("ALL_DATA_CLI_FIXTURES_DIR", raising=False)
-    with pytest.raises(NotImplementedError, match="ALL_DATA_CLI_FIXTURES_DIR"):
+    monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
+    with pytest.raises(NotImplementedError, match="DATA_CLI_FIXTURES_DIR"):
         fetch_collection("coll-1")
 
 
 def test_fetch_collection_loads_from_fixtures_dir(tmp_path, monkeypatch):
     (tmp_path / "coll-1.json").write_text(MOCK_COLLECTION.model_dump_json())
-    monkeypatch.setenv("ALL_DATA_CLI_FIXTURES_DIR", str(tmp_path))
+    monkeypatch.setenv("DATA_CLI_FIXTURES_DIR", str(tmp_path))
 
     result = fetch_collection("coll-1")
 
@@ -64,7 +64,7 @@ def test_fetch_collection_loads_from_fixtures_dir(tmp_path, monkeypatch):
 
 
 def test_fetch_collection_missing_fixture_raises_click_exception(tmp_path, monkeypatch):
-    monkeypatch.setenv("ALL_DATA_CLI_FIXTURES_DIR", str(tmp_path))
+    monkeypatch.setenv("DATA_CLI_FIXTURES_DIR", str(tmp_path))
     with pytest.raises(click.ClickException, match="No fixture for missing-id"):
         fetch_collection("missing-id")
 
@@ -74,8 +74,8 @@ def test_fetch_collection_missing_fixture_raises_click_exception(tmp_path, monke
 
 def test_download_collection_fetches_and_downloads(tmp_path):
     with (
-        patch("all_data_cli.download.fetch_collection") as mock_fetch,
-        patch("all_data_cli.download.download_collections") as mock_dl,
+        patch("data_cli.download.fetch_collection") as mock_fetch,
+        patch("data_cli.download.download_collections") as mock_dl,
     ):
         mock_fetch.return_value = MOCK_COLLECTION
         mock_dl.return_value = []
@@ -92,8 +92,8 @@ def test_download_collection_fetches_and_downloads(tmp_path):
 
 def test_download_collection_accepts_multiple_ids(tmp_path):
     with (
-        patch("all_data_cli.download.fetch_collection") as mock_fetch,
-        patch("all_data_cli.download.download_collections") as mock_dl,
+        patch("data_cli.download.fetch_collection") as mock_fetch,
+        patch("data_cli.download.download_collections") as mock_dl,
     ):
         mock_fetch.return_value = MOCK_COLLECTION
         mock_dl.return_value = []
@@ -115,8 +115,8 @@ def test_download_collection_prints_failure_summary_and_exits_nonzero(tmp_path):
         reason="Connection timeout",
     )
     with (
-        patch("all_data_cli.download.fetch_collection") as mock_fetch,
-        patch("all_data_cli.download.download_collections") as mock_dl,
+        patch("data_cli.download.fetch_collection") as mock_fetch,
+        patch("data_cli.download.download_collections") as mock_dl,
     ):
         mock_fetch.return_value = MOCK_COLLECTION
         mock_dl.return_value = [failure]
@@ -131,7 +131,7 @@ def test_download_collection_prints_failure_summary_and_exits_nonzero(tmp_path):
 
 def test_no_datasets_raises_error(tmp_path):
     empty = MOCK_COLLECTION.model_copy(update={"datasets": []})
-    with patch("all_data_cli.download.fetch_collection") as mock_fetch:
+    with patch("data_cli.download.fetch_collection") as mock_fetch:
         mock_fetch.return_value = empty
 
         result = CliRunner().invoke(
@@ -158,10 +158,10 @@ def test_submit_dataset_downloads_routes_and_collects_submission_failures(tmp_pa
     )
 
     with (
-        patch("all_data_cli.download.download_http") as mock_http,
-        patch("all_data_cli.download.download_s3_object") as mock_s3,
+        patch("data_cli.download.download_http") as mock_http,
+        patch("data_cli.download.download_s3_object") as mock_s3,
         patch(
-            "all_data_cli.download.expand_s3_location",
+            "data_cli.download.expand_s3_location",
             return_value=[("s3://bucket/b.h5ad", 100)],
         ),
     ):
@@ -228,8 +228,8 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
     ]
 
     with (
-        patch("all_data_cli.download.download_s3_object", return_value=None) as mock_s3,
-        patch("all_data_cli.download.expand_s3_location", return_value=expanded),
+        patch("data_cli.download.download_s3_object", return_value=None) as mock_s3,
+        patch("data_cli.download.expand_s3_location", return_value=expanded),
     ):
         with (
             ThreadPoolExecutor(max_workers=2) as http_ex,
@@ -260,7 +260,7 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path
     )
 
     with patch(
-        "all_data_cli.download.expand_s3_location",
+        "data_cli.download.expand_s3_location",
         side_effect=RuntimeError("listing failed: access denied"),
     ):
         with (
@@ -286,8 +286,8 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path
 def test_download_collections_writes_to_collection_dataset_subdirs(tmp_path):
     """Verifies the outdir/<collection.slug>/<dataset.slug>/ layout."""
     with (
-        patch("all_data_cli.download.download_http", return_value=None) as mock_http,
-        patch("all_data_cli.download.expand_s3_location", return_value=[]),
+        patch("data_cli.download.download_http", return_value=None) as mock_http,
+        patch("data_cli.download.expand_s3_location", return_value=[]),
     ):
         download_collections([MOCK_COLLECTION], Path(tmp_path))
 
@@ -339,8 +339,8 @@ def test_download_collections_submits_every_dataset_across_collections(tmp_path)
     )
 
     with (
-        patch("all_data_cli.download.download_http", return_value=None) as mock_http,
-        patch("all_data_cli.download.expand_s3_location", return_value=[]),
+        patch("data_cli.download.download_http", return_value=None) as mock_http,
+        patch("data_cli.download.expand_s3_location", return_value=[]),
     ):
         failures = download_collections([coll_a, coll_b], Path(tmp_path))
 
@@ -366,8 +366,8 @@ def test_download_collections_collects_worker_failures(tmp_path):
     )
 
     with (
-        patch("all_data_cli.download.download_http", return_value=failure),
-        patch("all_data_cli.download.expand_s3_location", return_value=[]),
+        patch("data_cli.download.download_http", return_value=failure),
+        patch("data_cli.download.expand_s3_location", return_value=[]),
     ):
         failures = download_collections([MOCK_COLLECTION], Path(tmp_path))
 
@@ -387,9 +387,9 @@ def test_download_collections_shuts_down_on_keyboard_interrupt(tmp_path):
         raise KeyboardInterrupt
 
     with (
-        patch("all_data_cli.download.ThreadPoolExecutor", SpyExecutor),
-        patch("all_data_cli.download.download_http", side_effect=raise_kbd),
-        patch("all_data_cli.download.expand_s3_location", return_value=[]),
+        patch("data_cli.download.ThreadPoolExecutor", SpyExecutor),
+        patch("data_cli.download.download_http", side_effect=raise_kbd),
+        patch("data_cli.download.expand_s3_location", return_value=[]),
     ):
         with pytest.raises(KeyboardInterrupt):
             download_collections([MOCK_COLLECTION], Path(tmp_path))
@@ -420,8 +420,8 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
     display = DownloadDisplay()
 
     with (
-        patch("all_data_cli.download.download_s3_object", return_value=None) as mock_s3,
-        patch("all_data_cli.download.expand_s3_location", return_value=expanded),
+        patch("data_cli.download.download_s3_object", return_value=None) as mock_s3,
+        patch("data_cli.download.expand_s3_location", return_value=expanded),
     ):
         with (
             ThreadPoolExecutor(max_workers=2) as http_ex,

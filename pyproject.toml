@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "all-data-cli"
+name = "biohub-data-cli"
 version = "0.1.0"
 description = "BioHub platform CLI"
 requires-python = ">=3.10"
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-bhp = "all_data_cli.main:cli"
+ops-data = "data_cli.main:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]

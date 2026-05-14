@@ -3,8 +3,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import requests
-from all_data_cli.models import DownloadFailure
-from all_data_cli.utils.cli import safe_join
+from data_cli.models import DownloadFailure
+from data_cli.utils.cli import safe_join
 
 _HTTP_CHUNK_SIZE = 1024 * 1024  # 1 MB
 

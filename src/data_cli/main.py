@@ -1,11 +1,11 @@
 import click
 
-from all_data_cli.download import download_group
+from data_cli.download import download_group
 
 
 @click.group()
 def cli():
-    """All data platform CLI."""
+    """biohub data CLI."""
 
 
 cli.add_command(download_group)

@@ -9,8 +9,8 @@ from botocore import UNSIGNED
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
-from all_data_cli.models import DownloadFailure
-from all_data_cli.utils.cli import safe_join
+from data_cli.models import DownloadFailure
+from data_cli.utils.cli import safe_join
 
 _S3_MULTIPART_SIZE = 16 * 1024 * 1024  # 16 MB
 _S3_MAX_CONCURRENCY = 8
