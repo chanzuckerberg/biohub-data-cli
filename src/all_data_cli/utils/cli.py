@@ -95,6 +95,8 @@ class DownloadDisplay:
         Called from HTTP workers when they learn a file's size (e.g. via
         Content-Length on the GET response). S3 sizes are seeded at task
         creation time from list_objects_v2, so S3 workers don't call this.
+
+        TODO: use a concurrent dict with TTL to avoid the linear scan.
         """
         with self._total_lock:
             task = next((t for t in self.progress.tasks if t.id == task_id), None)
@@ -104,6 +106,9 @@ class DownloadDisplay:
 
     def record_failure(self, f: DownloadFailure) -> None:
         """Append a failure and mutate the failures tree. Not thread-safe — call from the main thread only."""
+        assert threading.current_thread() is threading.main_thread(), (
+            "record_failure must be called from the main thread"
+        )
         if not self.failures:
             self._live.update(Group(self.progress, self._tree))
         self.failures.append(f)

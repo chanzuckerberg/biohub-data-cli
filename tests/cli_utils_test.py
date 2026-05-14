@@ -1,7 +1,8 @@
+import threading
 from unittest.mock import patch
 
 import pytest
-from rich.console import Group
+from rich.console import Console, Group
 
 from all_data_cli.models import DownloadFailure
 from all_data_cli.utils.cli import (
@@ -135,8 +136,6 @@ def test_failure_fields_with_rich_markup_characters_render_literally():
 
     # Render each label through a Console with a recorder to assert the bracket
     # content survives as literal text instead of being eaten as markup.
-    from rich.console import Console
-
     recorder = Console(record=True, width=200, file=None)
     recorder.print(coll_branch.label)
     recorder.print(ds_branch.label)
@@ -180,8 +179,6 @@ def test_grow_task_total_starts_from_none():
 
 def test_grow_task_total_is_thread_safe_under_concurrent_workers():
     """Many HTTP workers reporting Content-Length at once must not lose updates."""
-    import threading
-
     d = DownloadDisplay()
     task_id = d.progress.add_task("t", total=0)
     n_threads = 50
