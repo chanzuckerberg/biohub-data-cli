@@ -1,15 +1,15 @@
+import functools
 import os
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import click
-from rich.console import Console
+from rich.markup import escape
 
 from all_data_cli.models import Collection, Dataset, DownloadFailure
+from all_data_cli.utils.cli import DownloadDisplay, console
 from all_data_cli.utils.http import download_http
 from all_data_cli.utils.s3 import download_s3_object, expand_s3_location
-
-console = Console()
 
 _HTTP_MAX_WORKERS = 10
 _S3_MAX_WORKERS = 10
@@ -40,15 +40,24 @@ def submit_dataset_downloads(
     collection_slug: str,
     dataset: Dataset,
     dataset_outdir: Path,
-    http_ex: ThreadPoolExecutor,
-    s3_ex: ThreadPoolExecutor,
+    http_pool: ThreadPoolExecutor,
+    s3_pool: ThreadPoolExecutor,
+    display: DownloadDisplay,
 ) -> tuple[list[Future], list[DownloadFailure]]:
     """Submit one dataset's downloads to the shared pools.
 
-    Returns (submitted_futures, immediate_failures). Immediate failures cover
-    unsupported URL schemes and S3-prefix-listing errors that block submission.
+    Returns (submitted_futures, submission_failures). `submission_failures`
+    are failures known synchronously during submission — unsupported URL
+    schemes and S3-prefix-listing errors that prevent ever creating a future.
+    Anything that fails inside a worker shows up via the returned futures.
+
+    One progress task per dataset is added when there's at least one URL to
+    submit; all workers for the dataset share the same on_bytes_downloaded
+    callback bound to that task.
+    A Zarr that expands to N chunk objects shows one aggregate bar rather than
+    N tiny ones.
     """
-    immediate: list[DownloadFailure] = []
+    submission_failures: list[DownloadFailure] = []
     dataset_outdir.mkdir(parents=True, exist_ok=True)
 
     http_urls, s3_uris, unknown_urls = [], [], []
@@ -61,7 +70,7 @@ def submit_dataset_downloads(
             unknown_urls.append(url)
 
     for url in unknown_urls:
-        immediate.append(
+        submission_failures.append(
             DownloadFailure(
                 collection_slug=collection_slug,
                 dataset_slug=dataset.slug,
@@ -70,14 +79,15 @@ def submit_dataset_downloads(
             )
         )
 
-    # Expand S3 prefixes into individual object URIs before submitting,
-    # so each object is a separate future and can be downloaded in parallel.
-    s3_objects: list[str] = []
+    # Expand S3 prefixes into (uri, size) pairs so we can both submit each
+    # object as its own future and seed the progress task with the actual
+    # byte total directly from list_objects_v2 / head_object.
+    s3_objects: list[tuple[str, int]] = []
     for uri in s3_uris:
         try:
             s3_objects.extend(expand_s3_location(uri))
         except RuntimeError as e:
-            immediate.append(
+            submission_failures.append(
                 DownloadFailure(
                     collection_slug=collection_slug,
                     dataset_slug=dataset.slug,
@@ -86,51 +96,84 @@ def submit_dataset_downloads(
                 )
             )
 
+    if not s3_objects and not http_urls:
+        return [], submission_failures
+
+    # Seed total with what we already know: S3 sizes are exact and free.
+    # HTTP totals get added as workers learn Content-Length (see on_size_known).
+    # If no initial total, fall back to the curator-provided file_size_bytes.
+    initial_total = sum(size for _, size in s3_objects) or dataset.file_size_bytes
+    task_id = display.progress.add_task(
+        escape(f"{collection_slug}/{dataset.slug}"),
+        total=initial_total or None,
+    )
+    on_bytes_downloaded = functools.partial(display.advance_task, task_id)
+    on_size_known = functools.partial(display.grow_task_total, task_id)
+
     futures: list[Future] = [
-        s3_ex.submit(
-            download_s3_object, obj, dataset_outdir, collection_slug, dataset.slug
+        # S3 sizes are already accumulated into the task total at `expand_s3_location`
+        # time, so no need to call `on_size_known`.
+        s3_pool.submit(
+            download_s3_object,
+            obj_uri,
+            dataset_outdir,
+            collection_slug,
+            dataset.slug,
+            on_bytes_downloaded,
         )
-        for obj in s3_objects
+        for obj_uri, _ in s3_objects
     ] + [
-        http_ex.submit(
-            download_http, url, dataset_outdir, collection_slug, dataset.slug
+        http_pool.submit(
+            download_http,
+            url,
+            dataset_outdir,
+            collection_slug,
+            dataset.slug,
+            on_bytes_downloaded,
+            on_size_known,
         )
         for url in http_urls
     ]
-    return futures, immediate
+    return futures, submission_failures
 
 
 def download_collections(
     collections: list[Collection], outdir: Path
 ) -> list[DownloadFailure]:
-    """Download all datasets across all collections via shared HTTP or S3 pools."""
-    failures: list[DownloadFailure] = []
+    """Download all datasets across all collections via shared HTTP and S3 pools."""
     all_futures: list[Future] = []
 
     with (
-        ThreadPoolExecutor(max_workers=_HTTP_MAX_WORKERS) as http_ex,
-        ThreadPoolExecutor(max_workers=_S3_MAX_WORKERS) as s3_ex,
+        DownloadDisplay() as display,
+        ThreadPoolExecutor(max_workers=_HTTP_MAX_WORKERS) as http_pool,
+        ThreadPoolExecutor(max_workers=_S3_MAX_WORKERS) as s3_pool,
     ):
         for collection in collections:
             for dataset in collection.datasets:
                 ds_outdir = outdir / collection.slug / dataset.slug
-                futs, immediate = submit_dataset_downloads(
-                    collection.slug, dataset, ds_outdir, http_ex, s3_ex
+                futs, submission_failures = submit_dataset_downloads(
+                    collection.slug,
+                    dataset,
+                    ds_outdir,
+                    http_pool,
+                    s3_pool,
+                    display,
                 )
-                failures.extend(immediate)
+                for f in submission_failures:
+                    display.record_failure(f)
                 all_futures.extend(futs)
 
         try:
             for future in as_completed(all_futures):
                 result = future.result()
                 if result is not None:
-                    failures.append(result)
+                    display.record_failure(result)
         except KeyboardInterrupt:
-            http_ex.shutdown(wait=False, cancel_futures=True)
-            s3_ex.shutdown(wait=False, cancel_futures=True)
+            http_pool.shutdown(wait=False, cancel_futures=True)
+            s3_pool.shutdown(wait=False, cancel_futures=True)
             raise
 
-    return failures
+    return display.failures
 
 
 # ── CLI ───────────────────────────────────────────────────────────────
@@ -169,7 +212,6 @@ def download_collection_command(ids: tuple[str, ...], outdir: Path, yes: bool) -
 
     failures = download_collections(collections, outdir)
 
-    # TODO(AIP-285): print failures + progress bar in a more user-friendly way.
     if failures:
         raise click.ClickException(f"{len(failures)} download(s) failed.")
     console.print(f"\n[green]✅ done — {outdir}[/green]")

@@ -1,9 +1,10 @@
 import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 
 import requests
 from all_data_cli.models import DownloadFailure
-from all_data_cli.utils.cli import progress_bar_ctx, safe_join
+from all_data_cli.utils.cli import safe_join
 
 _HTTP_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
@@ -29,8 +30,21 @@ def http_url_to_local_path(url: str, outdir: Path) -> Path:
 
 
 def download_http(
-    url: str, outdir: Path, collection_slug: str, dataset_slug: str
+    url: str,
+    outdir: Path,
+    collection_slug: str,
+    dataset_slug: str,
+    on_bytes_downloaded: Callable[[int], None],
+    on_size_known: Callable[[int], None],
 ) -> DownloadFailure | None:
+    """Download `url` to `outdir/<filename>`.
+
+    `on_size_known(N)` fires once if the server's GET response includes a
+    `Content-Length` header, letting the orchestrator grow the task's total
+    in lockstep with what we actually learn about the file. Servers that
+    omit `Content-Length` (chunked encoding) simply skip that step.
+    `on_bytes_downloaded(N)` fires per chunk during streaming.
+    """
     try:
         outpath = http_url_to_local_path(url, outdir)
     except ValueError as e:
@@ -49,12 +63,16 @@ def download_http(
         with requests.get(url, stream=True, timeout=60) as r:
             r.raise_for_status()
             content_length = r.headers.get("Content-Length")
-            total = int(content_length) if content_length else None
-            with open(tmp, "wb") as f, progress_bar_ctx(total) as pbar:
+            if content_length is not None:
+                try:
+                    on_size_known(int(content_length))
+                except ValueError:
+                    pass  # malformed header — fall through, just no total update
+            with open(tmp, "wb") as f:
                 for chunk in r.iter_content(chunk_size=_HTTP_CHUNK_SIZE):
                     if chunk:
                         f.write(chunk)
-                        pbar.update(len(chunk))
+                        on_bytes_downloaded(len(chunk))
         tmp.replace(outpath)
         return None
     except (requests.RequestException, OSError) as e:

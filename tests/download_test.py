@@ -11,6 +11,7 @@ from all_data_cli.download import (
     fetch_collection,
     submit_dataset_downloads,
 )
+from all_data_cli.utils.cli import DownloadDisplay
 from all_data_cli.main import cli
 from all_data_cli.models import Collection, Dataset, DownloadFailure
 
@@ -144,7 +145,7 @@ def test_no_datasets_raises_error(tmp_path):
 # ── submit_dataset_downloads ────────────────────────────────────────────────
 
 
-def test_submit_dataset_downloads_routes_and_collects_immediate_failures(tmp_path):
+def test_submit_dataset_downloads_routes_and_collects_submission_failures(tmp_path):
     """Routing: http URLs go to HTTP downloader, s3 URIs are expanded then submitted."""
     dataset = Dataset.model_validate(
         {
@@ -161,7 +162,7 @@ def test_submit_dataset_downloads_routes_and_collects_immediate_failures(tmp_pat
         patch("all_data_cli.download.download_s3_object") as mock_s3,
         patch(
             "all_data_cli.download.expand_s3_location",
-            return_value=["s3://bucket/b.h5ad"],
+            return_value=[("s3://bucket/b.h5ad", 100)],
         ),
     ):
         mock_http.return_value = None
@@ -171,14 +172,14 @@ def test_submit_dataset_downloads_routes_and_collects_immediate_failures(tmp_pat
             ThreadPoolExecutor(max_workers=2) as http_ex,
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
-            futures, immediate = submit_dataset_downloads(
-                "coll", dataset, Path(tmp_path), http_ex, s3_ex
+            futures, submission_failures = submit_dataset_downloads(
+                "coll", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
             )
             for f in futures:
                 f.result()
 
     assert len(futures) == 2
-    assert immediate == []
+    assert submission_failures == []
     mock_http.assert_called_once()
     mock_s3.assert_called_once()
 
@@ -198,13 +199,13 @@ def test_submit_dataset_downloads_unknown_scheme(tmp_path):
         ThreadPoolExecutor(max_workers=1) as http_ex,
         ThreadPoolExecutor(max_workers=1) as s3_ex,
     ):
-        futures, immediate = submit_dataset_downloads(
-            "coll", dataset, Path(tmp_path), http_ex, s3_ex
+        futures, submission_failures = submit_dataset_downloads(
+            "coll", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
         )
 
     assert futures == []
-    assert len(immediate) == 1
-    assert "Unsupported URL scheme" in immediate[0].reason
+    assert len(submission_failures) == 1
+    assert "Unsupported URL scheme" in submission_failures[0].reason
 
 
 def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
@@ -219,11 +220,11 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
         }
     )
     expanded = [
-        "s3://bucket/zarr-store/.zarray",
-        "s3://bucket/zarr-store/.zattrs",
-        "s3://bucket/zarr-store/0/0/0",
-        "s3://bucket/zarr-store/0/0/1",
-        "s3://bucket/zarr-store/0/0/2",
+        ("s3://bucket/zarr-store/.zarray", 100),
+        ("s3://bucket/zarr-store/.zattrs", 200),
+        ("s3://bucket/zarr-store/0/0/0", 300),
+        ("s3://bucket/zarr-store/0/0/1", 400),
+        ("s3://bucket/zarr-store/0/0/2", 500),
     ]
 
     with (
@@ -234,16 +235,16 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
             ThreadPoolExecutor(max_workers=2) as http_ex,
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
-            futures, immediate = submit_dataset_downloads(
-                "coll-x", dataset, Path(tmp_path), http_ex, s3_ex
+            futures, submission_failures = submit_dataset_downloads(
+                "coll-x", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
             )
             for f in futures:
                 f.result()
 
-    assert immediate == []
+    assert submission_failures == []
     assert len(futures) == len(expanded)
     submitted_uris = {call.args[0] for call in mock_s3.call_args_list}
-    assert submitted_uris == set(expanded)
+    assert submitted_uris == {uri for uri, _ in expanded}
 
 
 def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path):
@@ -266,13 +267,13 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path
             ThreadPoolExecutor(max_workers=1) as http_ex,
             ThreadPoolExecutor(max_workers=1) as s3_ex,
         ):
-            futures, immediate = submit_dataset_downloads(
-                "coll-x", dataset, Path(tmp_path), http_ex, s3_ex
+            futures, submission_failures = submit_dataset_downloads(
+                "coll-x", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
             )
 
     assert futures == []
-    assert len(immediate) == 1
-    failure = immediate[0]
+    assert len(submission_failures) == 1
+    failure = submission_failures[0]
     assert failure.collection_slug == "coll-x"
     assert failure.dataset_slug == "matrix-zarr"
     assert failure.url == "s3://bucket/bad-prefix/"
@@ -397,3 +398,75 @@ def test_download_collections_shuts_down_on_keyboard_interrupt(tmp_path):
     # with-block's default shutdown(wait=True, cancel_futures=False).
     cancel_calls = [c for c in shutdown_calls if c == (False, True)]
     assert len(cancel_calls) == 2
+
+
+# ── progress wiring ─────────────────────────────────────────────────────────
+
+
+def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path):
+    """A Zarr expanding to many objects still shows ONE aggregated progress task."""
+    dataset = Dataset.model_validate(
+        {
+            "id": "ds-1",
+            "slug": "matrix-zarr",
+            "title": "Z",
+            "file_format": "zarr_v3",
+            "file_size_bytes": 5000,
+            "urls": ["s3://bucket/zarr/"],
+        }
+    )
+    # Five chunks of 1000 bytes each → orchestrator seeds total=5000 from listing.
+    expanded = [(f"s3://bucket/zarr/chunk-{i}", 1000) for i in range(5)]
+    display = DownloadDisplay()
+
+    with (
+        patch("all_data_cli.download.download_s3_object", return_value=None) as mock_s3,
+        patch("all_data_cli.download.expand_s3_location", return_value=expanded),
+    ):
+        with (
+            ThreadPoolExecutor(max_workers=2) as http_ex,
+            ThreadPoolExecutor(max_workers=2) as s3_ex,
+        ):
+            futures, _ = submit_dataset_downloads(
+                "coll", dataset, Path(tmp_path), http_ex, s3_ex, display
+            )
+            for f in futures:
+                f.result()
+
+    # Five S3 objects, but a single shared progress task with the dataset's total.
+    assert len(display.progress.tasks) == 1
+    task = display.progress.tasks[0]
+    assert task.description == "coll/matrix-zarr"
+    # Total comes from summed S3 sizes (5 × 1000), not from dataset.file_size_bytes.
+    assert task.total == 5000
+    # All five workers got the same on_bytes_downloaded callable (positional arg 4).
+    advances = {call.args[4] for call in mock_s3.call_args_list}
+    assert len(advances) == 1
+
+
+def test_submit_dataset_downloads_no_progress_task_when_only_submission_failures(
+    tmp_path,
+):
+    """A dataset whose URLs are all unsupported should not create a progress task."""
+    dataset = Dataset.model_validate(
+        {
+            "id": "ds-1",
+            "slug": "matrix",
+            "title": "M",
+            "file_format": "parquet",
+            "urls": ["ftp://example.com/file.h5ad"],
+        }
+    )
+    display = DownloadDisplay()
+
+    with (
+        ThreadPoolExecutor(max_workers=1) as http_ex,
+        ThreadPoolExecutor(max_workers=1) as s3_ex,
+    ):
+        futures, submission_failures = submit_dataset_downloads(
+            "coll", dataset, Path(tmp_path), http_ex, s3_ex, display
+        )
+
+    assert futures == []
+    assert len(submission_failures) == 1
+    assert display.progress.tasks == []
