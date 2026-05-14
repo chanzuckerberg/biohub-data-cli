@@ -7,14 +7,15 @@ import click
 from rich.markup import escape
 
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
+from biohub_data_cli.utils.cli import DownloadDisplay, console
+from biohub_data_cli.utils.http import download_http
+from biohub_data_cli.utils.s3 import download_s3_object, resolve_s3_uris
 from biohub_data_cli.utils.stats import (
+    aggregate_dry_run_stats,
     estimate_size_summary,
     get_collections_stats,
     print_dry_run_summary,
 )
-from biohub_data_cli.utils.cli import DownloadDisplay, console
-from biohub_data_cli.utils.http import download_http
-from biohub_data_cli.utils.s3 import download_s3_object, resolve_s3_uris
 
 _HTTP_MAX_WORKERS = 10
 _S3_MAX_WORKERS = 10
@@ -193,7 +194,7 @@ def download_group() -> None:
 @click.option(
     "--dry-run",
     is_flag=True,
-    help="Print a per-dataset statistics without downloading.",
+    help="Print per-dataset statistics without downloading.",
 )
 def download_collection_command(
     ids: tuple[str, ...], outdir: Path, yes: bool, dry_run: bool
@@ -210,8 +211,9 @@ def download_collection_command(
 
     if dry_run:
         stats_by_collection = get_collections_stats(collections)
-        n_failed = print_dry_run_summary(stats_by_collection)
-        if n_failed:
+        aggregate = aggregate_dry_run_stats(stats_by_collection)
+        print_dry_run_summary(stats_by_collection, aggregate)
+        if aggregate.n_failed_uris:
             raise click.ClickException("Dry run completed with size lookup failures.")
         return
 

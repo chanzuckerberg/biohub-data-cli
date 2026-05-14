@@ -1,7 +1,11 @@
 from unittest.mock import patch
 
 from biohub_data_cli.models import Collection
-from biohub_data_cli.utils.stats import estimate_size_summary, get_collections_stats
+from biohub_data_cli.utils.stats import (
+    aggregate_dry_run_stats,
+    estimate_size_summary,
+    get_collections_stats,
+)
 
 
 def _collection_with_sizes(sizes: list[int | None]) -> Collection:
@@ -86,8 +90,9 @@ def test_get_collections_stats_aggregates_per_dataset():
     ):
         stats = get_collections_stats([coll])
 
-    assert list(stats.keys()) == ["coll"]
-    rows = stats["coll"]
+    assert len(stats) == 1
+    returned_coll, rows = stats[0]
+    assert returned_coll is coll
     assert len(rows) == 2
     assert rows[0].collection_slug == "coll"
     assert rows[0].dataset_slug == "ds1"
@@ -126,8 +131,9 @@ def test_get_collections_stats_silently_skips_http_urls():
         stats = get_collections_stats([coll])
 
     mock_expand.assert_called_once_with("s3://b/x")
-    assert stats["coll"][0].total_bytes == 1024
-    assert stats["coll"][0].n_failed_uris == 0
+    rows = stats[0][1]
+    assert rows[0].total_bytes == 1024
+    assert rows[0].n_failed_uris == 0
 
 
 def test_get_collections_stats_counts_failed_uris_as_partial():
@@ -156,5 +162,71 @@ def test_get_collections_stats_counts_failed_uris_as_partial():
     with patch("biohub_data_cli.utils.s3.expand_s3_location", side_effect=expand):
         stats = get_collections_stats([coll])
 
-    assert stats["coll"][0].total_bytes == 500
-    assert stats["coll"][0].n_failed_uris == 1
+    rows = stats[0][1]
+    assert rows[0].total_bytes == 500
+    assert rows[0].n_failed_uris == 1
+
+
+# ── aggregate_dry_run_stats ─────────────────────────────────────────────────
+
+
+def test_aggregate_counts_http_urls_skipped():
+    """Any http:// or https:// URL counts toward n_http_urls_skipped."""
+    coll = Collection.model_validate(
+        {
+            "id": "c",
+            "slug": "coll",
+            "title": "C",
+            "datasets": [
+                {
+                    "id": "d1",
+                    "slug": "ds1",
+                    "title": "D1",
+                    "file_format": "parquet",
+                    "urls": [
+                        "https://example.com/a.parquet",
+                        "http://example.com/b.parquet",
+                        "s3://b/x",
+                        "ftp://example.com/c",  # not http, not counted
+                    ],
+                }
+            ],
+        }
+    )
+    with patch(
+        "biohub_data_cli.utils.s3.expand_s3_location",
+        return_value=[("s3://b/x", 100)],
+    ):
+        stats = get_collections_stats([coll])
+
+    agg = aggregate_dry_run_stats(stats)
+    assert agg.n_http_urls_skipped == 2
+    assert agg.total_bytes == 100
+    assert agg.n_failed_uris == 0
+
+
+def test_aggregate_no_http_urls_skipped_when_s3_only():
+    coll = Collection.model_validate(
+        {
+            "id": "c",
+            "slug": "coll",
+            "title": "C",
+            "datasets": [
+                {
+                    "id": "d1",
+                    "slug": "ds1",
+                    "title": "D1",
+                    "file_format": "parquet",
+                    "urls": ["s3://b/x"],
+                }
+            ],
+        }
+    )
+    with patch(
+        "biohub_data_cli.utils.s3.expand_s3_location",
+        return_value=[("s3://b/x", 100)],
+    ):
+        stats = get_collections_stats([coll])
+
+    agg = aggregate_dry_run_stats(stats)
+    assert agg.n_http_urls_skipped == 0

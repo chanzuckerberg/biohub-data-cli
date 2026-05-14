@@ -1,37 +1,41 @@
 from rich.markup import escape
 from rich.tree import Tree
 
-from biohub_data_cli.models import Collection, DatasetStats
+from biohub_data_cli.models import Collection, DatasetStats, DryRunAggregate
 from biohub_data_cli.utils.cli import console, format_bytes
 from biohub_data_cli.utils.s3 import resolve_s3_uris
 
 
 def get_collections_stats(
     collections: list[Collection],
-) -> dict[str, list[DatasetStats]]:
+) -> list[tuple[Collection, list[DatasetStats]]]:
     """Resolve every dataset's S3 URIs and return per-dataset aggregates
-    grouped by collection slug. Insertion order follows the input.
+    paired with their collection. Order follows the input; duplicate
+    collections appear as separate entries.
 
     Dry-run stats do not support HTTP URLs at the moment. They are silently skipped,
     since we don't expect HTTP URLs in OPS data.
     """
-    stats_by_collection: dict[str, list[DatasetStats]] = {}
+    result: list[tuple[Collection, list[DatasetStats]]] = []
     for collection in collections:
-        bucket = stats_by_collection.setdefault(collection.slug, [])
+        rows: list[DatasetStats] = []
         for dataset in collection.datasets:
             s3_uris = [u for u in dataset.urls if u.startswith("s3://")]
-            objects, failures = resolve_s3_uris(
-                collection.slug, dataset.slug, s3_uris
+            n_http = sum(
+                1 for u in dataset.urls if u.startswith(("http://", "https://"))
             )
-            bucket.append(
+            objects, failures = resolve_s3_uris(collection.slug, dataset.slug, s3_uris)
+            rows.append(
                 DatasetStats(
                     collection_slug=collection.slug,
                     dataset_slug=dataset.slug,
                     total_bytes=sum(size for _, size in objects),
                     n_failed_uris=len(failures),
+                    n_http_urls_skipped=n_http,
                 )
             )
-    return stats_by_collection
+        result.append((collection, rows))
+    return result
 
 
 def estimate_size_summary(collections: list[Collection]) -> str:
@@ -41,11 +45,7 @@ def estimate_size_summary(collections: list[Collection]) -> str:
     how many; all `None` → `size unknown`. The estimate is dataset-level
     (per the model), so this is faster than dry-run but coarser.
     """
-    sizes = [
-        d.file_size_bytes
-        for c in collections
-        for d in c.datasets
-    ]
+    sizes = [d.file_size_bytes for c in collections for d in c.datasets]
     sized = [s for s in sizes if s is not None]
     if not sized:
         return "size unknown"
@@ -56,41 +56,55 @@ def estimate_size_summary(collections: list[Collection]) -> str:
     return f"~{total} estimated"
 
 
+def aggregate_dry_run_stats(
+    stats_by_collection: list[tuple[Collection, list[DatasetStats]]],
+) -> DryRunAggregate:
+    """Roll per-dataset stats into a single grand-total summary."""
+    all_rows = [s for _, rows in stats_by_collection for s in rows]
+    return DryRunAggregate(
+        n_collections=len(stats_by_collection),
+        n_datasets=len(all_rows),
+        total_bytes=sum(s.total_bytes for s in all_rows),
+        n_failed_uris=sum(s.n_failed_uris for s in all_rows),
+        n_http_urls_skipped=sum(s.n_http_urls_skipped for s in all_rows),
+    )
+
+
 def print_dry_run_summary(
-    stats_by_collection: dict[str, list[DatasetStats]],
-) -> int:
-    """Print one tree per collection + grand total. Partial rows append an
-    inline note; the grand total flags overall partiality. Returns the
-    total count of S3 URIs that failed to list so the caller can branch on
-    it without re-walking the stats.
+    stats_by_collection: list[tuple[Collection, list[DatasetStats]]],
+    aggregate: DryRunAggregate,
+) -> None:
+    """Print one tree per collection followed by the grand-total line.
+    Partial rows append an inline note; the grand total flags overall
+    partiality.
     """
-    total_bytes = 0
-    total_failed = 0
-    total_datasets = 0
-    for coll_slug, stats in stats_by_collection.items():
-        tree = Tree(f"[bold]{escape(coll_slug)}[/bold]")
+    for collection, stats in stats_by_collection:
+        tree = Tree(f"[bold]{escape(collection.slug)}[/bold]")
         for s in stats:
-            total_bytes += s.total_bytes
-            total_failed += s.n_failed_uris
-            total_datasets += 1
-            note = (
-                f" [yellow]· partial ({s.n_failed_uris} size lookup(s) failed)[/yellow]"
-                if s.n_failed_uris
-                else ""
-            )
+            warnings: list[str] = []
+            if s.n_failed_uris:
+                warnings.append(f"partial ({s.n_failed_uris} size lookup(s) failed)")
+            if s.n_http_urls_skipped:
+                warnings.append("contains HTTP URLs that are not sized")
+            warning_str = "".join(f" [yellow]· {w}[/yellow]" for w in warnings)
             tree.add(
-                f"{escape(s.dataset_slug)} · {format_bytes(s.total_bytes)}{note}"
+                f"{escape(s.dataset_slug)} · {format_bytes(s.total_bytes)}{warning_str}"
             )
         console.print(tree)
 
     console.print(
-        f"Total: {len(stats_by_collection)} collection(s), "
-        f"{total_datasets} dataset(s), "
-        f"{format_bytes(total_bytes)}"
+        f"Total: {aggregate.n_collections} collection(s), "
+        f"{aggregate.n_datasets} dataset(s), "
+        f"{format_bytes(aggregate.total_bytes)}"
     )
-    if total_failed:
+
+    warnings: list[str] = []
+    if aggregate.n_failed_uris:
+        warnings.append(f"{aggregate.n_failed_uris} lookup(s) failed")
+    if aggregate.n_http_urls_skipped:
+        warnings.append("HTTP URLs are not sized")
+    if warnings:
         console.print(
-            f"[yellow]Note: {total_failed} size lookup(s) failed; "
-            f"total is an underestimate.[/yellow]"
+            f"[yellow]Warning: total is an underestimate, since "
+            f"{' and '.join(warnings)}.[/yellow]"
         )
-    return total_failed
