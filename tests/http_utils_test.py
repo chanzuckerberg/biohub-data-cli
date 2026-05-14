@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from all_data_cli.utils.http import download_http, http_url_to_local_path
+from biohub_data_cli.utils.http import download_http, http_url_to_local_path
 
 
 def _ignore_bytes(_: int) -> None: ...
@@ -28,7 +28,7 @@ def test_download_http_success(tmp_path):
     mock_response.__enter__ = lambda s: s
     mock_response.__exit__ = MagicMock(return_value=False)
 
-    with patch("all_data_cli.utils.http.requests.get", return_value=mock_response):
+    with patch("biohub_data_cli.utils.http.requests.get", return_value=mock_response):
         result = download_http(
             "https://example.com/file.h5ad",
             tmp_path,
@@ -43,7 +43,9 @@ def test_download_http_success(tmp_path):
 
 
 def test_download_http_records_failure(tmp_path):
-    with patch("all_data_cli.utils.http.requests.get", side_effect=OSError("timeout")):
+    with patch(
+        "biohub_data_cli.utils.http.requests.get", side_effect=OSError("timeout")
+    ):
         result = download_http(
             "https://example.com/file.h5ad",
             tmp_path,
@@ -68,7 +70,7 @@ def test_download_http_calls_on_size_known_from_content_length(tmp_path):
     mock_response.__exit__ = MagicMock(return_value=False)
 
     sizes_reported = []
-    with patch("all_data_cli.utils.http.requests.get", return_value=mock_response):
+    with patch("biohub_data_cli.utils.http.requests.get", return_value=mock_response):
         download_http(
             "https://example.com/file.h5ad",
             tmp_path,
@@ -90,7 +92,7 @@ def test_download_http_skips_on_size_known_without_content_length(tmp_path):
     mock_response.__exit__ = MagicMock(return_value=False)
 
     sizes_reported = []
-    with patch("all_data_cli.utils.http.requests.get", return_value=mock_response):
+    with patch("biohub_data_cli.utils.http.requests.get", return_value=mock_response):
         download_http(
             "https://example.com/file.h5ad",
             tmp_path,

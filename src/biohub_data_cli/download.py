@@ -6,21 +6,21 @@ from pathlib import Path
 import click
 from rich.markup import escape
 
-from all_data_cli.models import Collection, Dataset, DownloadFailure
-from all_data_cli.utils.cli import DownloadDisplay, console
-from all_data_cli.utils.http import download_http
-from all_data_cli.utils.s3 import download_s3_object, expand_s3_location
+from biohub_data_cli.models import Collection, Dataset, DownloadFailure
+from biohub_data_cli.utils.cli import DownloadDisplay, console
+from biohub_data_cli.utils.http import download_http
+from biohub_data_cli.utils.s3 import download_s3_object, expand_s3_location
 
 _HTTP_MAX_WORKERS = 10
 _S3_MAX_WORKERS = 10
 
-_FIXTURES_DIR_ENV = "ALL_DATA_CLI_FIXTURES_DIR"
+_FIXTURES_DIR_ENV = "DATA_CLI_FIXTURES_DIR"
 
 
 def fetch_collection(collection_id: str) -> Collection:
     """Fetch a collection by ID.
 
-    Backend endpoint is pending; until it lands, set $ALL_DATA_CLI_FIXTURES_DIR
+    Backend endpoint is pending; until it lands, set $DATA_CLI_FIXTURES_DIR
     to a directory of `<collection_id>.json` files validated against `Collection`.
     Remove this branch once the real endpoint is wired up.
     """
@@ -181,7 +181,7 @@ def download_collections(
 
 @click.group("download")
 def download_group() -> None:
-    """Download data from the all-data platform."""
+    """Download data from Biohub."""
 
 
 @download_group.command("collection")

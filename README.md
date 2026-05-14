@@ -1,6 +1,6 @@
-# all-data-cli
+# data-cli
 
-All data CLI.
+Biohub data CLI.
 
 ## Code of Conduct
 

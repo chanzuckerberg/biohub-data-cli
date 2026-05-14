@@ -15,7 +15,7 @@ from rich.progress import (
 )
 from rich.tree import Tree
 
-from all_data_cli.models import DownloadFailure
+from biohub_data_cli.models import DownloadFailure
 
 console = Console()
 

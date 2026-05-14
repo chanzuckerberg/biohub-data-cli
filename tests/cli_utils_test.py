@@ -4,8 +4,8 @@ from unittest.mock import patch
 import pytest
 from rich.console import Console, Group
 
-from all_data_cli.models import DownloadFailure
-from all_data_cli.utils.cli import (
+from biohub_data_cli.models import DownloadFailure
+from biohub_data_cli.utils.cli import (
     DownloadDisplay,
     safe_join,
 )
