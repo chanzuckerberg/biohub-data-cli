@@ -7,9 +7,14 @@ import click
 from rich.markup import escape
 
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
+from biohub_data_cli.utils.stats import (
+    estimate_size_summary,
+    get_collections_stats,
+    print_dry_run_summary,
+)
 from biohub_data_cli.utils.cli import DownloadDisplay, console
 from biohub_data_cli.utils.http import download_http
-from biohub_data_cli.utils.s3 import download_s3_object, expand_s3_location
+from biohub_data_cli.utils.s3 import download_s3_object, resolve_s3_uris
 
 _HTTP_MAX_WORKERS = 10
 _S3_MAX_WORKERS = 10
@@ -82,19 +87,10 @@ def submit_dataset_downloads(
     # Expand S3 prefixes into (uri, size) pairs so we can both submit each
     # object as its own future and seed the progress task with the actual
     # byte total directly from list_objects_v2 / head_object.
-    s3_objects: list[tuple[str, int]] = []
-    for uri in s3_uris:
-        try:
-            s3_objects.extend(expand_s3_location(uri))
-        except RuntimeError as e:
-            submission_failures.append(
-                DownloadFailure(
-                    collection_slug=collection_slug,
-                    dataset_slug=dataset.slug,
-                    url=uri,
-                    reason=str(e),
-                )
-            )
+    s3_objects, listing_failures = resolve_s3_uris(
+        collection_slug, dataset.slug, s3_uris
+    )
+    submission_failures.extend(listing_failures)
 
     if not s3_objects and not http_urls:
         return [], submission_failures
@@ -194,18 +190,36 @@ def download_group() -> None:
     help="Output directory for downloaded files.",
 )
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
-def download_collection_command(ids: tuple[str, ...], outdir: Path, yes: bool) -> None:
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Print a per-dataset statistics without downloading.",
+)
+def download_collection_command(
+    ids: tuple[str, ...], outdir: Path, yes: bool, dry_run: bool
+) -> None:
     """Download one or more collections by ID."""
+    if dry_run and yes:
+        raise click.UsageError("--dry-run and --yes are mutually exclusive.")
+
     collections = [fetch_collection(cid) for cid in ids]
 
     n_datasets = sum(len(c.datasets) for c in collections)
     if n_datasets == 0:
         raise click.ClickException("No datasets to download.")
 
-    # TODO(AIP-284): show statistics on the size of data to be downloaded.
+    if dry_run:
+        stats_by_collection = get_collections_stats(collections)
+        n_failed = print_dry_run_summary(stats_by_collection)
+        if n_failed:
+            raise click.ClickException("Dry run completed with size lookup failures.")
+        return
+
     if not yes:
+        estimate = estimate_size_summary(collections)
         click.confirm(
-            f"Download {len(collections)} collection(s), {n_datasets} dataset(s)?",
+            f"Download {len(collections)} collection(s), {n_datasets} dataset(s) "
+            f"({estimate})?",
             default=False,
             abort=True,
         )
