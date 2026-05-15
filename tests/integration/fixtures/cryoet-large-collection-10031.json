@@ -1,0 +1,37 @@
+{
+  "id": "cryoet-large-collection-10031",
+  "slug": "cryoet-large-collection-10031",
+  "title": "Vibrio cholerae (tax_id=666) strain:TRH7000 by Matt Swulius",
+  "datasets": [
+    {
+      "id": "10194",
+      "slug": "vibrio-cholerae-gfp-mreb",
+      "title": "Vibrio cholerae (GFP-MreB)",
+      "file_format": "mixed",
+      "file_size_bytes": 260543152827,
+      "urls": [
+        "s3://cryoet-data-portal-public/10194/"
+      ]
+    },
+    {
+      "id": "10195",
+      "slug": "vibrio-cholerae-no-iptg",
+      "title": "Vibrio cholerae (No IPTG)",
+      "file_format": "mixed",
+      "file_size_bytes": 180988963414,
+      "urls": [
+        "s3://cryoet-data-portal-public/10195/"
+      ]
+    },
+    {
+      "id": "10196",
+      "slug": "vibrio-cholerae-wt-w-plasmid",
+      "title": "Vibrio cholerae (WT w/plasmid)",
+      "file_format": "mixed",
+      "file_size_bytes": 242024957112,
+      "urls": [
+        "s3://cryoet-data-portal-public/10196/"
+      ]
+    }
+  ]
+}

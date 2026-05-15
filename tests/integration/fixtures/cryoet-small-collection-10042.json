@@ -1,0 +1,17 @@
+{
+  "id": "cryoet-small-collection-10042",
+  "slug": "cryoet-small-collection-10042",
+  "title": "Spiroplasma melliferum (tax_id=2134) strain: by Morgan Beeby",
+  "datasets": [
+    {
+      "id": "10242",
+      "slug": "spiroplasma-melliferum",
+      "title": "Spiroplasma melliferum",
+      "file_format": "mixed",
+      "file_size_bytes": 10894869375,
+      "urls": [
+        "s3://cryoet-data-portal-public/10242/"
+      ]
+    }
+  ]
+}

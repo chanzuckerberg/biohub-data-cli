@@ -26,6 +26,13 @@ where = ["src"]
 testpaths = ["tests"]
 python_files = ["*_test.py"]
 python_functions = ["test_*"]
+# Integration tests hit live S3/HTTP and are deselected by default.
+# Run them explicitly with `pytest -m integration`.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests that hit real S3 buckets / HTTP servers",
+    "slow: tests that download large fixtures (~GB+)",
+]
 
 [dependency-groups]
 dev = [

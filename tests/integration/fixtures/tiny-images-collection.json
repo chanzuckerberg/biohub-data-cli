@@ -1,0 +1,15 @@
+{
+  "id": "tiny-images-collection",
+  "slug": "tiny-images-collection",
+  "title": "Tiny Images (S3 dir listing smoke test)",
+  "datasets": [
+    {
+      "id": "images-thumbnails",
+      "slug": "images-thumbnails",
+      "title": "10217 dataset Images dir (snapshot + thumbnail)",
+      "file_format": "jpg",
+      "file_size_bytes": 197673,
+      "urls": ["s3://cryoet-data-portal-public/10217/Images/"]
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "id": "medium-mixed-paths-collection",
+  "slug": "medium-mixed-paths-collection",
+  "title": "Medium S3 (mix of dir + single-object paths, ~345 MiB)",
+  "datasets": [
+    {
+      "id": "reconstruction-images",
+      "slug": "reconstruction-images",
+      "title": "Reconstruction images dir (4 objects)",
+      "file_format": "jpg",
+      "file_size_bytes": 1048576,
+      "urls": ["s3://cryoet-data-portal-public/10217/mba2010-08-26-5/Reconstructions/VoxelSpacing10.240/Images/"]
+    },
+    {
+      "id": "tomogram-zarr",
+      "slug": "tomogram-zarr",
+      "title": "Tomogram zarr store (15 chunk objects)",
+      "file_format": "zarr",
+      "file_size_bytes": 103079215,
+      "urls": ["s3://cryoet-data-portal-public/10217/mba2010-08-26-5/Reconstructions/VoxelSpacing10.240/Tomograms/100/mba2010-08-26-5.zarr/"]
+    },
+    {
+      "id": "tomogram-mrc",
+      "slug": "tomogram-mrc",
+      "title": "Tomogram MRC (single object)",
+      "file_format": "mrc",
+      "file_size_bytes": 255999672,
+      "urls": ["s3://cryoet-data-portal-public/10217/mba2010-08-26-5/Reconstructions/VoxelSpacing10.240/Tomograms/100/mba2010-08-26-5.mrc"]
+    }
+  ]
+}

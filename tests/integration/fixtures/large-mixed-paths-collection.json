@@ -1,0 +1,31 @@
+{
+  "id": "large-mixed-paths-collection",
+  "slug": "large-mixed-paths-collection",
+  "title": "Large S3 (mix of dir + single-object paths, ~6.8 GiB)",
+  "datasets": [
+    {
+      "id": "tilt-series-dir",
+      "slug": "tilt-series-dir",
+      "title": "TiltSeries dir (92 objects, ~1.6 GiB)",
+      "file_format": "mrc",
+      "file_size_bytes": 1717986918,
+      "urls": ["s3://cryoet-data-portal-public/10217/mba2010-08-26-5/TiltSeries/"]
+    },
+    {
+      "id": "tilt-series-mrc",
+      "slug": "tilt-series-mrc",
+      "title": "TiltSeries MRC (single object, ~664 MiB)",
+      "file_format": "mrc",
+      "file_size_bytes": 696254464,
+      "urls": ["s3://cryoet-data-portal-public/10217/mba2010-08-26-5/TiltSeries/100/mba2010-08-26-5.mrc"]
+    },
+    {
+      "id": "dataset-10025-full",
+      "slug": "dataset-10025-full",
+      "title": "Full 10025 dataset dir (451 objects, ~4.5 GiB)",
+      "file_format": "mixed",
+      "file_size_bytes": 4831838208,
+      "urls": ["s3://cryoet-data-portal-public/10025/"]
+    }
+  ]
+}
