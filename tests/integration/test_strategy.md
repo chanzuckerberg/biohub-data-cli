@@ -2,7 +2,15 @@
 
 How we verify a real end-to-end download against fixtures in `tests/integration/fixtures/`. Unit tests in `tests/*_test.py` cover wiring and edge cases against mocks; this document covers the live-network/live-S3 layer.
 
-## Tier 1 — correctness (cheap, must-have) - Implemented
+## Status
+
+| Tier | Status |
+|---|---|
+| Tier 1 — correctness | Implemented |
+| Tier 2 — content integrity | Not implemented |
+| Tier 3 — performance & observability | Not implemented |
+
+## Tier 1 — correctness (cheap, must-have)
 
 - **Key-set equality.** Compare `{s3 keys expanded by expand_s3_location}` against `{relative paths under outdir/<collection.slug>/<dataset.slug>/}`. A single set-diff catches both "missing file" and "extra file" at once. The expected set is free from `list_objects_v2`.
 - **Per-file size.** Source size from `list_objects_v2` / `head_object` (S3) or `Content-Length` (HTTP) vs. `os.stat().st_size` locally. Catches truncation, partial-stream writes, and chunked-encoding bugs without extra I/O.
