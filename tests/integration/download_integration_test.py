@@ -39,13 +39,8 @@ _REQUIRED_BINARIES = ("aws", "curl")
 #
 # Intentionally excluded / manual-only due to large size:
 #   - `extra-large-collection.json` (~4.2 TiB, 161k objects)
-#   - The medium and large cryoet fixtures (`cryoet-{medium,large}-*`)
 CLEAN_FIXTURES = [
-    "tiny-images-collection.json",
     "medium-mixed-paths-collection.json",
-    "mixed-protocol-collection.json",
-    pytest.param("large-mixed-paths-collection.json", marks=pytest.mark.slow),
-    pytest.param("cryoet-small-collection-10042.json", marks=pytest.mark.slow),
 ]
 
 

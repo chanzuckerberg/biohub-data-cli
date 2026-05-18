@@ -1,6 +1,8 @@
 # Integration test strategy
 
-How we verify a real end-to-end download against fixtures in `tests/integration/fixtures/`. Unit tests in `tests/*_test.py` cover wiring and edge cases against mocks; this document covers the live-network/live-S3 layer.
+These tests verify the **correctness of the download functionality end-to-end** against fixtures in `tests/integration/fixtures/`. They exercise the real networking stack — actual S3 API calls (`list_objects_v2`, `get_object`), real HTTP requests, real socket/TLS handshakes, real on-disk writes — none of which are covered by the mock-based unit tests in `tests/*_test.py`. The goal is to catch bugs that only surface against real transports: pagination, redirects, multipart, concurrency under real latency, and the various ways networking, S3 listing, and HTTP semantics can diverge from their mocked stand-ins.
+
+Unit tests cover wiring and edge cases against mocks; this document covers the live-network / live-S3 layer.
 
 ## Status
 
@@ -36,27 +38,13 @@ TCP+TLS already protect against silent corruption, so checksums mostly catch *ap
 - **SIGINT mid-run.** Send Ctrl-C while futures are pending; assert both pools shut down within ~5s, no orphan `.part` / `.tmp` files, partial files are either cleaned up or atomically renamed only on success.
 - **Disk-full.** Run against a small tmpfs; assert clean `DownloadFailure` reporting, not a stack trace.
 - **Outdir layout.** Confirm end-to-end that files land at `outdir/<collection.slug>/<dataset.slug>/<file>`. (A unit test already covers this against mocks.)
-- **HTTP-as-directory failure.** The real cryoet DB rows store HTTP URLs as directories (`https://.../10242/`). The CLI's HTTP path only handles single-file URLs, so these must surface as a `DownloadFailure` with a sensible reason — not a `ValueError` traceback. Not currently exercised in the standard fixtures (the `cryoet-*` fixtures are S3-only for clean test runs); add a dedicated `http-dir-failure` fixture if you want explicit regression coverage.
+- **HTTP-as-directory failure.** Some upstream DB rows store HTTP URLs as directories (`https://.../10242/`). The CLI's HTTP path only handles single-file URLs, so these must surface as a `DownloadFailure` with a sensible reason — not a `ValueError` traceback. Not currently exercised in the standard fixtures; add a dedicated `http-dir-failure` fixture if you want explicit regression coverage.
 
 
 ## Fixture-to-tier mapping
 
 | Fixture | Tier 1 | Tier 2 | Tier 3 | Notes |
 |---|---|---|---|---|
-| `tiny-images-collection` | yes | skip | yes | smoke test, runs in seconds |
-| `medium-mixed-paths-collection` | yes | yes | yes | primary integration target |
+| `medium-mixed-paths-collection` | yes | yes | yes | primary integration target — S3 dir, S3 single-object, HTTP single-object, HTTP+S3 in one dataset |
 | `large-mixed-paths-collection` | yes | size-only | yes | weekly / on-demand |
-| `mixed-protocol-collection` | yes | yes | — | protocol routing coverage |
 | `extra-large-collection` | dry-run only | — | listing time | scheduled CI job |
-| `cryoet-small-collection-10042` | yes | — | — | real-DB shape, S3-only, ~10 GB; `slow` marker |
-| `cryoet-medium-collection-10055` | yes | — | — | real-DB shape, ~91 GB; `slow` marker |
-| `cryoet-large-collection-10031` | yes | — | — | real-DB shape, ~637 GB; `slow` marker, on-demand |
-
-### Note: HTTP intentionally stripped from cryoet fixtures
-
-The real DB rows for cryoet datasets carry both an `s3://` URL and a parallel `https://` URL pointing at the same content. We deliberately drop the HTTP entry in these fixtures because:
-
-1. **Not on the OPS-launch critical path.** HTTP is a lower-priority transport for the initial OPS data launch; S3 is the primary supported path. Spending CI time on it now is premature.
-2. **Folder-shaped HTTP URLs aren't supported.** The CLI's HTTP downloader handles single-file URLs only — it has no listing semantics. The DB stores HTTP URLs as directories (`https://.../10242/`), which the CLI cannot expand. Including them would just produce expected failures and obscure real regressions.
-
-If/when HTTP becomes a supported folder transport, restore the HTTPS entries (or add a parallel `cryoet-http-*` fixture set) and update the test parametrize list.
