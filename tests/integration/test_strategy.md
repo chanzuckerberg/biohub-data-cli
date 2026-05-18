@@ -46,5 +46,3 @@ TCP+TLS already protect against silent corruption, so checksums mostly catch *ap
 | Fixture | Tier 1 | Tier 2 | Tier 3 | Notes |
 |---|---|---|---|---|
 | `medium-mixed-paths-collection` | yes | yes | yes | primary integration target — S3 dir, S3 single-object, HTTP single-object, HTTP+S3 in one dataset |
-| `large-mixed-paths-collection` | yes | size-only | yes | weekly / on-demand |
-| `extra-large-collection` | dry-run only | — | listing time | scheduled CI job |
