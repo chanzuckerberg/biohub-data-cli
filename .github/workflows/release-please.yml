@@ -1,0 +1,139 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+# Default-deny; jobs opt in to what they need.
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false  # don't cancel an in-flight publish
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      # GitHub App token (not default GITHUB_TOKEN). The App's authorship is
+      # what lets the release-please PR get CI: GITHUB_TOKEN-authored pushes
+      # don't trigger workflows, so the release PR would otherwise sit
+      # uncovered. With the App, ci.yml runs on the release PR and the
+      # maintainer reviews against green checks.
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.GH_ACTIONS_HELPER_APP_ID }}
+          private-key: ${{ secrets.GH_ACTIONS_HELPER_PK }}
+
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          release-type: python
+          target-branch: main
+
+  # Tests + builds the wheel once after the release PR is merged, then
+  # attaches the wheel to the (still-draft) release. The release-please-config
+  # keeps `draft: true` so the release stays hidden during this and the
+  # downstream publish/smoke-test jobs. The final `finalize-release` job
+  # un-drafts only if everything passed — failures leave a visible draft
+  # for investigation.
+  build-and-attach:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # for uploading assets to the draft release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Run tests on the tagged commit
+        run: uv run pytest tests/
+
+      - name: Build package
+        run: |
+          uv pip install --system "build>=1.2,<2"
+          python -m build
+
+      - name: Attach wheel + sdist to draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+
+      - name: Upload dist for downstream jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-to-pypi:
+    needs: [release-please, build-and-attach]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # required for OIDC trusted publisher auth to PyPI
+    steps:
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # Routing is driven by `prerelease` on release-please-config.json:
+      #   prerelease releases  → Test PyPI
+      #   stable releases      → prod PyPI
+      # To go prod, drop `"prerelease": true` from release-please-config.json
+      # (typically at 1.0.0). No workflow change needed.
+      - name: Publish to Test PyPI
+        if: ${{ needs.release-please.outputs.prerelease == 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: ${{ needs.release-please.outputs.prerelease != 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Final step: un-draft the release once the wheel is on PyPI. If any
+  # preceding job failed, the release stays as a draft for the maintainer
+  # to inspect — the broken state is visible but not announced to anyone
+  # watching releases.
+  finalize-release:
+    needs: [release-please, publish-to-pypi]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          gh release edit "$TAG_NAME" \
+            --repo "${{ github.repository }}" \
+            --draft=false

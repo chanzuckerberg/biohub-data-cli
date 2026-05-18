@@ -41,3 +41,37 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest -v tests/ --cov=biohub_data_cli --cov-report=term-missing
+
+  build-package:
+    name: build package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel + sdist
+        run: |
+          pip install "build>=1.2,<2"
+          python -m build
+
+  # Catches syntax / import / dep-resolution issues across the Python versions
+  # we claim to support (`requires-python = ">=3.10"` in pyproject.toml).
+  # Uses pip — not uv — to exercise the install path real users follow.
+  python-version-compatibility:
+    name: install (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install and exercise entry point
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          ops-data --help
