@@ -105,6 +105,8 @@ def resolve_s3_uris(
     """Expand s3 uris of a dataset to (object_uri, size). Listing failures get
     attributed to the originating URI and returned alongside the resolved
     objects so callers can continue with the rest.
+
+    TODO(AIP-297): scalability - make this concurrent
     """
     s3_objects: list[tuple[str, int]] = []
     failures: list[DownloadFailure] = []

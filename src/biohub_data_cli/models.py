@@ -38,7 +38,8 @@ class DatasetStats:
     `n_failed_uris > 0` means `total_bytes` is partial — at least one of the
     dataset's S3 URIs couldn't be listed/headed, so its files aren't counted
     in the sum. `n_http_urls_skipped > 0` means the dataset also has HTTP
-    URLs that are silently skipped by dry-run sizing today.
+    URLs that dry-run sizing does not size today; they're reported as a
+    warning in the summary rather than included in `total_bytes`.
     """
 
     collection_slug: str

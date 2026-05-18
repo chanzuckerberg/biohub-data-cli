@@ -14,8 +14,9 @@ def get_collections_stats(
     paired with their collection. Order follows the input; duplicate
     collections appear as separate entries.
 
-    Dry-run stats do not support HTTP URLs at the moment. They are silently skipped,
-    since we don't expect HTTP URLs in OPS data.
+    Dry-run stats do not support HTTP URLs at the moment. They are counted per
+    dataset and surfaced as a warning in the summary (see `print_dry_run_summary`),
+    but not sized, since we don't expect HTTP URLs in OPS data.
     """
     result: list[tuple[Collection, list[DatasetStats]]] = []
     total_datasets = sum(len(c.datasets) for c in collections)
