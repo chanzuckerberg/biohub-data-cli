@@ -45,7 +45,7 @@ jobs:
   # Tests + builds the wheel once after the release PR is merged, then
   # attaches the wheel to the (still-draft) release. The release-please-config
   # keeps `draft: true` so the release stays hidden during this and the
-  # downstream publish/smoke-test jobs. The final `finalize-release` job
+  # downstream publish jobs. The final `finalize-release` job
   # un-drafts only if everything passed — failures leave a visible draft
   # for investigation.
   build-and-attach:
