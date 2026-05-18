@@ -8,6 +8,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from biohub_data_cli.utils.s3 import (
     download_s3_object,
     expand_s3_location,
+    resolve_s3_uris,
     s3_url_to_local_path,
 )
 
@@ -264,3 +265,43 @@ def test_download_s3_object_records_failure(tmp_path):
     assert result.collection_slug == "my-coll"
     assert result.dataset_slug == "my-ds"
     assert "Access denied" in result.reason
+
+
+# ── resolve_s3_uris ─────────────────────────────────────────────────────────
+
+
+def test_resolve_s3_uris_returns_expanded_objects_and_no_failures():
+    with patch(
+        "biohub_data_cli.utils.s3.expand_s3_location",
+        side_effect=lambda uri: [(f"{uri}/a", 100), (f"{uri}/b", 200)],
+    ):
+        objects, failures = resolve_s3_uris("coll", "ds", ["s3://b/x", "s3://b/y"])
+
+    assert failures == []
+    assert objects == [
+        ("s3://b/x/a", 100),
+        ("s3://b/x/b", 200),
+        ("s3://b/y/a", 100),
+        ("s3://b/y/b", 200),
+    ]
+
+
+def test_resolve_s3_uris_attributes_listing_failures_and_continues():
+    """A failing URI becomes a DownloadFailure; remaining URIs still resolve."""
+
+    def expand(uri):
+        if uri == "s3://b/bad":
+            raise RuntimeError("listing failed: access denied")
+        return [(f"{uri}/file", 50)]
+
+    with patch("biohub_data_cli.utils.s3.expand_s3_location", side_effect=expand):
+        objects, failures = resolve_s3_uris(
+            "coll-x", "matrix-z", ["s3://b/good", "s3://b/bad"]
+        )
+
+    assert objects == [("s3://b/good/file", 50)]
+    assert len(failures) == 1
+    assert failures[0].collection_slug == "coll-x"
+    assert failures[0].dataset_slug == "matrix-z"
+    assert failures[0].url == "s3://b/bad"
+    assert "listing failed" in failures[0].reason

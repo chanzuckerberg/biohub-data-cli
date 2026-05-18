@@ -97,6 +97,34 @@ def expand_s3_location(uri: str) -> list[tuple[str, int]]:
     return [(f"s3://{bucket}/{key}", head["ContentLength"])]
 
 
+def resolve_s3_uris(
+    collection_slug: str,
+    dataset_slug: str,
+    s3_uris: list[str],
+) -> tuple[list[tuple[str, int]], list[DownloadFailure]]:
+    """Expand s3 uris of a dataset to (object_uri, size). Listing failures get
+    attributed to the originating URI and returned alongside the resolved
+    objects so callers can continue with the rest.
+
+    TODO(AIP-297): scalability - make this concurrent
+    """
+    s3_objects: list[tuple[str, int]] = []
+    failures: list[DownloadFailure] = []
+    for uri in s3_uris:
+        try:
+            s3_objects.extend(expand_s3_location(uri))
+        except RuntimeError as e:
+            failures.append(
+                DownloadFailure(
+                    collection_slug=collection_slug,
+                    dataset_slug=dataset_slug,
+                    url=uri,
+                    reason=str(e),
+                )
+            )
+    return s3_objects, failures
+
+
 def download_s3_object(
     uri: str,
     outdir: Path,

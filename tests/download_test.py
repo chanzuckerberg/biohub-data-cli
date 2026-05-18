@@ -161,7 +161,7 @@ def test_submit_dataset_downloads_routes_and_collects_submission_failures(tmp_pa
         patch("biohub_data_cli.download.download_http") as mock_http,
         patch("biohub_data_cli.download.download_s3_object") as mock_s3,
         patch(
-            "biohub_data_cli.download.expand_s3_location",
+            "biohub_data_cli.utils.s3.expand_s3_location",
             return_value=[("s3://bucket/b.h5ad", 100)],
         ),
     ):
@@ -231,7 +231,7 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
         patch(
             "biohub_data_cli.download.download_s3_object", return_value=None
         ) as mock_s3,
-        patch("biohub_data_cli.download.expand_s3_location", return_value=expanded),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=expanded),
     ):
         with (
             ThreadPoolExecutor(max_workers=2) as http_ex,
@@ -262,7 +262,7 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path
     )
 
     with patch(
-        "biohub_data_cli.download.expand_s3_location",
+        "biohub_data_cli.utils.s3.expand_s3_location",
         side_effect=RuntimeError("listing failed: access denied"),
     ):
         with (
@@ -289,7 +289,7 @@ def test_download_collections_writes_to_collection_dataset_subdirs(tmp_path):
     """Verifies the outdir/<collection.slug>/<dataset.slug>/ layout."""
     with (
         patch("biohub_data_cli.download.download_http", return_value=None) as mock_http,
-        patch("biohub_data_cli.download.expand_s3_location", return_value=[]),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
     ):
         download_collections([MOCK_COLLECTION], Path(tmp_path))
 
@@ -342,7 +342,7 @@ def test_download_collections_submits_every_dataset_across_collections(tmp_path)
 
     with (
         patch("biohub_data_cli.download.download_http", return_value=None) as mock_http,
-        patch("biohub_data_cli.download.expand_s3_location", return_value=[]),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
     ):
         failures = download_collections([coll_a, coll_b], Path(tmp_path))
 
@@ -369,7 +369,7 @@ def test_download_collections_collects_worker_failures(tmp_path):
 
     with (
         patch("biohub_data_cli.download.download_http", return_value=failure),
-        patch("biohub_data_cli.download.expand_s3_location", return_value=[]),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
     ):
         failures = download_collections([MOCK_COLLECTION], Path(tmp_path))
 
@@ -391,7 +391,7 @@ def test_download_collections_shuts_down_on_keyboard_interrupt(tmp_path):
     with (
         patch("biohub_data_cli.download.ThreadPoolExecutor", SpyExecutor),
         patch("biohub_data_cli.download.download_http", side_effect=raise_kbd),
-        patch("biohub_data_cli.download.expand_s3_location", return_value=[]),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
     ):
         with pytest.raises(KeyboardInterrupt):
             download_collections([MOCK_COLLECTION], Path(tmp_path))
@@ -425,7 +425,7 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
         patch(
             "biohub_data_cli.download.download_s3_object", return_value=None
         ) as mock_s3,
-        patch("biohub_data_cli.download.expand_s3_location", return_value=expanded),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=expanded),
     ):
         with (
             ThreadPoolExecutor(max_workers=2) as http_ex,
@@ -474,3 +474,71 @@ def test_submit_dataset_downloads_no_progress_task_when_only_submission_failures
     assert futures == []
     assert len(submission_failures) == 1
     assert display.progress.tasks == []
+
+
+# ── CLI --dry-run ───────────────────────────────────────────────────────────
+
+
+def test_dry_run_prints_summary_and_does_not_download(tmp_path):
+    with (
+        patch("biohub_data_cli.download.fetch_collection") as mock_fetch,
+        patch("biohub_data_cli.download.download_collections") as mock_dl,
+        patch(
+            "biohub_data_cli.utils.s3.expand_s3_location",
+            return_value=[("s3://bucket/matrix-b/chunk", 512)],
+        ),
+    ):
+        mock_fetch.return_value = MOCK_COLLECTION
+
+        result = CliRunner().invoke(
+            cli, ["download", "collection", "coll-1", "-o", str(tmp_path), "--dry-run"]
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_dl.assert_not_called()
+    # Mock collection has one HTTP dataset (matrix-a, silently skipped) and one
+    # S3 dataset (matrix-b, sized at 512 from the mocked expansion).
+    assert "matrix-a" in result.output
+    assert "matrix-b" in result.output
+    assert "512 bytes" in result.output
+
+
+def test_dry_run_exits_nonzero_when_size_lookups_fail(tmp_path):
+    with (
+        patch("biohub_data_cli.download.fetch_collection") as mock_fetch,
+        patch("biohub_data_cli.download.download_collections") as mock_dl,
+        patch(
+            "biohub_data_cli.utils.s3.expand_s3_location",
+            side_effect=RuntimeError("listing failed"),
+        ),
+    ):
+        mock_fetch.return_value = MOCK_COLLECTION
+
+        result = CliRunner().invoke(
+            cli, ["download", "collection", "coll-1", "-o", str(tmp_path), "--dry-run"]
+        )
+
+    assert result.exit_code != 0
+    assert "partial" in result.output.lower() or "failed" in result.output.lower()
+    mock_dl.assert_not_called()
+
+
+def test_dry_run_with_yes_is_mutually_exclusive(tmp_path):
+    with patch("biohub_data_cli.download.fetch_collection") as mock_fetch:
+        mock_fetch.return_value = MOCK_COLLECTION
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "download",
+                "collection",
+                "coll-1",
+                "-o",
+                str(tmp_path),
+                "--dry-run",
+                "--yes",
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output.lower()
