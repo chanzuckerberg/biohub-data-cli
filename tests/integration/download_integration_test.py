@@ -37,8 +37,7 @@ _REQUIRED_BINARIES = ("aws", "curl")
 
 # Fixtures expected to succeed cleanly (failures == []).
 #
-# Intentionally excluded / manual-only due to large size:
-#   - `extra-large-collection.json` (~4.2 TiB, 161k objects)
+# Intentionally excluded large datasets.
 CLEAN_FIXTURES = [
     "medium-mixed-paths-collection.json",
 ]
