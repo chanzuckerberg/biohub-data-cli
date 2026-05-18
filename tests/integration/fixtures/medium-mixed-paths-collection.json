@@ -1,0 +1,50 @@
+{
+  "id": "medium-mixed-paths-collection",
+  "slug": "medium-mixed-paths-collection",
+  "title": "Medium: mix of S3 dir + S3 single-object + HTTP single-object + HTTP+S3 in one dataset (~163 MiB)",
+  "datasets": [
+    {
+      "id": "tomogram-zarr",
+      "slug": "tomogram-zarr",
+      "title": "Tomogram zarr store (15 chunk objects)",
+      "file_format": "zarr",
+      "file_size_bytes": 103079215,
+      "urls": ["s3://cryoet-data-portal-public/10217/mba2010-08-26-5/Reconstructions/VoxelSpacing10.240/Tomograms/100/mba2010-08-26-5.zarr/"]
+    },
+    {
+      "id": "segmentation-mask-mrc",
+      "slug": "segmentation-mask-mrc",
+      "title": "Segmentation mask MRC (single object, ~64 MiB)",
+      "file_format": "mrc",
+      "file_size_bytes": 64001024,
+      "urls": ["s3://cryoet-data-portal-public/10217/mba2010-08-26-5/Reconstructions/VoxelSpacing10.240/Annotations/100/membrane-1.0_segmentationmask.mrc"]
+    },
+    {
+      "id": "http-only-thumbnail",
+      "slug": "http-only-thumbnail",
+      "title": "HTTP-only: single thumbnail JPEG",
+      "file_format": "jpg",
+      "file_size_bytes": 20624,
+      "urls": ["https://files.cryoetdataportal.cziscience.com/10217/Images/thumbnail.jpg"]
+    },
+    {
+      "id": "s3-only-metadata",
+      "slug": "s3-only-metadata",
+      "title": "S3-only: single dataset_metadata.json (head_object branch)",
+      "file_format": "json",
+      "file_size_bytes": 1965,
+      "urls": ["s3://cryoet-data-portal-public/10217/dataset_metadata.json"]
+    },
+    {
+      "id": "http-and-s3-mixed",
+      "slug": "http-and-s3-mixed",
+      "title": "HTTP + S3 in one dataset (both pools)",
+      "file_format": "mixed",
+      "file_size_bytes": 177086,
+      "urls": [
+        "s3://cryoet-data-portal-public/10217/mba2010-08-26-5/run_metadata.json",
+        "https://files.cryoetdataportal.cziscience.com/10217/Images/snapshot.jpg"
+      ]
+    }
+  ]
+}

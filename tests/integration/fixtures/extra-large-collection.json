@@ -1,0 +1,15 @@
+{
+  "id": "extra-large-collection",
+  "slug": "extra-large-collection",
+  "title": "Extra-large S3 listing (~4.2 TiB / 161k objects — dry-run only)",
+  "datasets": [
+    {
+      "id": "cryoet-10007-full",
+      "slug": "cryoet-10007-full",
+      "title": "Full 10007 dataset — exercises list_objects_v2 pagination at scale",
+      "file_format": "mixed",
+      "file_size_bytes": 4634999650396,
+      "urls": ["s3://cryoet-data-portal-public/10007/"]
+    }
+  ]
+}
