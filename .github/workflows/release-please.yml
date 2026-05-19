@@ -101,19 +101,19 @@ jobs:
           name: dist
           path: dist/
 
-      # Routing is driven by `prerelease` on release-please-config.json:
-      #   prerelease releases  → Test PyPI
-      #   stable releases      → prod PyPI
-      # To go prod, drop `"prerelease": true` from release-please-config.json
-      # (typically at 1.0.0). No workflow change needed.
+      # Routing is driven by the major version of the released tag:
+      #   v0.x.y → Test PyPI (pre-1.0, API still unstable)
+      #   v1+    → prod PyPI
+      # Flipping to prod happens automatically when the first v1.0.0 tag
+      # is cut; no workflow change needed.
       - name: Publish to Test PyPI
-        if: ${{ needs.release-please.outputs.prerelease == 'true' }}
+        if: ${{ startsWith(needs.release-please.outputs.tag_name, 'v0.') }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
 
       - name: Publish to PyPI
-        if: ${{ needs.release-please.outputs.prerelease != 'true' }}
+        if: ${{ !startsWith(needs.release-please.outputs.tag_name, 'v0.') }}
         uses: pypa/gh-action-pypi-publish@release/v1
 
   # Final step: un-draft the release once the wheel is on PyPI. If any
