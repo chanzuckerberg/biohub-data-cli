@@ -31,7 +31,7 @@ _cli_version: str | None = None
 
 
 def _resolve_api_key() -> str:
-    if os.environ.get("BIOHUB_CLI_ENV", "").lower() == "dev":
+    if os.environ.get("BIOHUB_CLI_ENV", "").strip().lower() == "dev":
         return _DEV_KEY
     return _PROD_KEY
 
