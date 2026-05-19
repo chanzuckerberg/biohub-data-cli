@@ -71,9 +71,7 @@ jobs:
         run: uv run pytest tests/
 
       - name: Build package
-        run: |
-          uv pip install --system "build>=1.2,<2"
-          python -m build
+        run: uv run --with build python -m build
 
       - name: Attach wheel + sdist to draft release
         uses: softprops/action-gh-release@v2
