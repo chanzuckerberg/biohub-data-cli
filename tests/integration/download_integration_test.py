@@ -36,8 +36,6 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 _REQUIRED_BINARIES = ("aws", "curl")
 
 # Fixtures expected to succeed cleanly (failures == []).
-#
-# Intentionally excluded large datasets.
 CLEAN_FIXTURES = [
     "medium-mixed-paths-collection.json",
 ]
