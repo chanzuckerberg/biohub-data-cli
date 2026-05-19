@@ -20,10 +20,8 @@ from platformdirs import user_config_dir
 
 _APP_NAME = "biohub-data-cli"
 
-# TODO: populate once Amplitude projects are provisioned by ops.
-# Until both are non-empty, init() is a no-op even when analytics is enabled.
-_DEV_KEY = ""
-_PROD_KEY = ""
+_DEV_KEY = "531141822a146f13d16eeaf96b8c91ec"
+_PROD_KEY = "507382a5bad17ec853515118a6b8e7c1"
 
 _client: Optional[Amplitude] = None
 _device_id: Optional[str] = None
