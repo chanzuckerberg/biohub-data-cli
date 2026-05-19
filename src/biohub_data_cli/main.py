@@ -1,6 +1,5 @@
 import click
 
-from biohub_data_cli import analytics
 from biohub_data_cli.download import download_group
 
 
@@ -14,7 +13,6 @@ def cli():
     sent — no paths, URLs, or other identifying values. Set
     DISABLE_BIOHUB_DATA_CLI_ANALYTICS=true to disable.
     """
-    analytics.init()
 
 
 cli.add_command(download_group)

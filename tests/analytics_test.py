@@ -22,41 +22,47 @@ def reset_analytics_state(tmp_path, monkeypatch):
 # ── init / device_id ─────────────────────────────────────────────────────────
 
 
-def test_init_noop_when_keys_empty(monkeypatch):
-    monkeypatch.setattr(analytics, "_DEV_KEY", "")
-    monkeypatch.setattr(analytics, "_PROD_KEY", "")
-    analytics.init()
-    assert analytics._client is None
-
-
 def test_init_constructs_client_and_registers_shutdown(monkeypatch):
     monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
     fake_amplitude = MagicMock()
     monkeypatch.setattr(analytics, "Amplitude", fake_amplitude)
     with patch("biohub_data_cli.analytics.atexit.register") as fake_atexit:
-        analytics.init()
+        analytics._init()
     fake_amplitude.assert_called_once_with("fake-key")
     fake_atexit.assert_called_once_with(fake_amplitude.return_value.shutdown)
     assert analytics._client is fake_amplitude.return_value
     assert analytics._device_id is not None
 
 
-def test_init_is_idempotent(monkeypatch):
+def test_init_noop_when_client_already_set(monkeypatch):
     monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
     fake_amplitude = MagicMock()
     monkeypatch.setattr(analytics, "Amplitude", fake_amplitude)
-    analytics.init()
-    analytics.init()
+    analytics._init()
+    analytics._init()
     assert fake_amplitude.call_count == 1
 
 
-@pytest.mark.parametrize("value", ["true", "True", "TRUE"])
+def test_init_retries_after_failure(monkeypatch):
+    monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
+    failing = MagicMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr(analytics, "Amplitude", failing)
+    analytics._init()
+    assert analytics._client is None
+
+    succeeding = MagicMock()
+    monkeypatch.setattr(analytics, "Amplitude", succeeding)
+    analytics._init()
+    assert analytics._client is succeeding.return_value
+
+
+@pytest.mark.parametrize("value", ["true", "True", "TRUE", "  true  "])
 def test_init_noop_when_opt_out_env_true(monkeypatch, value):
     monkeypatch.setenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", value)
     monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
     fake_amplitude = MagicMock()
     monkeypatch.setattr(analytics, "Amplitude", fake_amplitude)
-    analytics.init()
+    analytics._init()
     assert analytics._client is None
     fake_amplitude.assert_not_called()
 
@@ -66,7 +72,7 @@ def test_init_proceeds_when_opt_out_env_not_true(monkeypatch, value):
     monkeypatch.setenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", value)
     monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
     monkeypatch.setattr(analytics, "Amplitude", MagicMock())
-    analytics.init()
+    analytics._init()
     assert analytics._client is not None
 
 
@@ -75,7 +81,7 @@ def test_init_swallows_exceptions(monkeypatch):
     monkeypatch.setattr(
         analytics, "Amplitude", MagicMock(side_effect=RuntimeError("boom"))
     )
-    analytics.init()  # must not raise
+    analytics._init()  # must not raise
     assert analytics._client is None
 
 
@@ -83,12 +89,12 @@ def test_device_id_persists_across_init_calls(monkeypatch, tmp_path):
     monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
     monkeypatch.setattr(analytics, "Amplitude", MagicMock())
 
-    analytics.init()
+    analytics._init()
     first_id = analytics._device_id
 
     analytics._client = None
     analytics._device_id = None
-    analytics.init()
+    analytics._init()
     second_id = analytics._device_id
 
     assert first_id == second_id
@@ -111,8 +117,25 @@ def test_prod_key_selected_by_default(monkeypatch):
 # ── track ────────────────────────────────────────────────────────────────────
 
 
-def test_track_noop_when_not_initialized():
+def test_track_noop_when_opted_out(monkeypatch):
+    monkeypatch.setenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", "true")
+    monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
+    fake_amplitude = MagicMock()
+    monkeypatch.setattr(analytics, "Amplitude", fake_amplitude)
+
     analytics.track("some_event", {"foo": "bar"})  # must not raise
+    fake_amplitude.assert_not_called()
+
+
+def test_track_lazily_initializes(monkeypatch):
+    monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
+    fake_amplitude = MagicMock()
+    monkeypatch.setattr(analytics, "Amplitude", fake_amplitude)
+
+    assert analytics._client is None
+    analytics.track("first_event")
+    fake_amplitude.assert_called_once_with("fake-key")
+    assert analytics._client is fake_amplitude.return_value
 
 
 def test_track_sends_device_id_not_user_id(monkeypatch):
@@ -120,7 +143,6 @@ def test_track_sends_device_id_not_user_id(monkeypatch):
     fake_amplitude = MagicMock()
     monkeypatch.setattr(analytics, "Amplitude", fake_amplitude)
 
-    analytics.init()
     analytics.track("download_completed", {"bytes": 123})
 
     fake_client = fake_amplitude.return_value
@@ -139,7 +161,6 @@ def test_track_swallows_exceptions(monkeypatch):
     fake_amplitude.return_value.track.side_effect = RuntimeError("network down")
     monkeypatch.setattr(analytics, "Amplitude", fake_amplitude)
 
-    analytics.init()
     analytics.track("anything", {})  # must not raise
 
 
@@ -147,7 +168,6 @@ def test_track_caller_properties_not_mutated(monkeypatch):
     monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
     monkeypatch.setattr(analytics, "Amplitude", MagicMock())
 
-    analytics.init()
     caller_props = {"bytes": 1}
     analytics.track("e", caller_props)
     assert "cli_version" not in caller_props

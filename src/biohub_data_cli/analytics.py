@@ -1,8 +1,7 @@
 """Anonymous usage analytics to Amplitude.
 
-Public API: ``init()`` once at CLI startup, then ``track(event, properties)``
-at event points. Both functions are best-effort and never raise — an analytics
-bug must not break a user's command.
+Public API: call ``track(event, properties)`` at event points. The first
+``track()`` lazily initializes the Amplitude client.
 
 Only an anonymous, randomly generated ``device_id`` is sent. No paths, URLs,
 hostnames, or other identifying values should ever be added to event properties.
@@ -13,7 +12,7 @@ import os
 import uuid
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from amplitude import Amplitude, BaseEvent
 from platformdirs import user_config_dir
@@ -26,9 +25,9 @@ _APP_NAME = "biohub-data-cli"
 _DEV_KEY = "531141822a146f13d16eeaf96b8c91ec"
 _PROD_KEY = "507382a5bad17ec853515118a6b8e7c1"
 
-_client: Optional[Amplitude] = None
-_device_id: Optional[str] = None
-_cli_version: Optional[str] = None
+_client: Amplitude | None = None
+_device_id: str | None = None
+_cli_version: str | None = None
 
 
 def _resolve_api_key() -> str:
@@ -64,8 +63,9 @@ def _resolve_cli_version() -> str:
         return "unknown"
 
 
-def init() -> None:
-    """Initialize analytics. Idempotent; a no-op when disabled or no API key."""
+def _init() -> None:
+    """Lazily initialize on first track(). No-op once ``_client`` is set; if
+    init fails or is opted-out, the next track() call will try again."""
     global _client, _device_id, _cli_version
     if _client is not None:
         return
@@ -74,13 +74,10 @@ def init() -> None:
         == "true"
     ):
         return
-    api_key = _resolve_api_key()
-    if not api_key:
-        return
     try:
         _device_id = _load_or_create_device_id()
         _cli_version = _resolve_cli_version()
-        _client = Amplitude(api_key)
+        _client = Amplitude(_resolve_api_key())
         atexit.register(_client.shutdown)
     except Exception:
         _client = None
@@ -88,8 +85,9 @@ def init() -> None:
         _cli_version = None
 
 
-def track(event_type: str, properties: Optional[dict[str, Any]] = None) -> None:
+def track(event_type: str, properties: dict[str, Any] | None = None) -> None:
     """Emit one event. Never raises; no-op if analytics is disabled."""
+    _init()
     if _client is None:
         return
     try:
