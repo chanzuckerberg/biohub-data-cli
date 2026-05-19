@@ -20,6 +20,9 @@ from platformdirs import user_config_dir
 
 _APP_NAME = "biohub-data-cli"
 
+# Amplitude write keys are intentionally embedded in the published package, as is
+# standard for client-side analytics SDKs. They authorize event ingestion only —
+# they cannot read data — so the worst case if leaked is spam events.
 _DEV_KEY = "531141822a146f13d16eeaf96b8c91ec"
 _PROD_KEY = "507382a5bad17ec853515118a6b8e7c1"
 
@@ -43,6 +46,9 @@ def _load_or_create_device_id() -> str:
         if existing:
             return existing
     new_id = str(uuid.uuid4())
+    # Non-atomic: two concurrent first-run invocations can each generate an ID and
+    # the later writer wins, briefly splitting one user across two device IDs.
+    # Accepted — happens at most once per machine and only affects first-run.
     path.write_text(new_id)
     try:
         path.chmod(0o600)
@@ -59,9 +65,14 @@ def _resolve_cli_version() -> str:
 
 
 def init() -> None:
-    """Initialize analytics. Idempotent; a no-op when no API key is configured."""
+    """Initialize analytics. Idempotent; a no-op when disabled or no API key."""
     global _client, _device_id, _cli_version
     if _client is not None:
+        return
+    if (
+        os.environ.get("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", "").strip().lower()
+        == "true"
+    ):
         return
     api_key = _resolve_api_key()
     if not api_key:

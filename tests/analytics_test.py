@@ -22,7 +22,9 @@ def reset_analytics_state(tmp_path, monkeypatch):
 # ── init / device_id ─────────────────────────────────────────────────────────
 
 
-def test_init_noop_when_keys_empty():
+def test_init_noop_when_keys_empty(monkeypatch):
+    monkeypatch.setattr(analytics, "_DEV_KEY", "")
+    monkeypatch.setattr(analytics, "_PROD_KEY", "")
     analytics.init()
     assert analytics._client is None
 
@@ -46,6 +48,26 @@ def test_init_is_idempotent(monkeypatch):
     analytics.init()
     analytics.init()
     assert fake_amplitude.call_count == 1
+
+
+@pytest.mark.parametrize("value", ["true", "True", "TRUE"])
+def test_init_noop_when_opt_out_env_true(monkeypatch, value):
+    monkeypatch.setenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", value)
+    monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
+    fake_amplitude = MagicMock()
+    monkeypatch.setattr(analytics, "Amplitude", fake_amplitude)
+    analytics.init()
+    assert analytics._client is None
+    fake_amplitude.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["1", "yes", "false", "0", ""])
+def test_init_proceeds_when_opt_out_env_not_true(monkeypatch, value):
+    monkeypatch.setenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", value)
+    monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
+    monkeypatch.setattr(analytics, "Amplitude", MagicMock())
+    analytics.init()
+    assert analytics._client is not None
 
 
 def test_init_swallows_exceptions(monkeypatch):
