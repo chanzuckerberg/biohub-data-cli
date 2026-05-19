@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/chanzuckerberg/biohub-data-cli/compare/v0.1.0...v0.1.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* test pypi release ([#12](https://github.com/chanzuckerberg/biohub-data-cli/issues/12)) ([05ed859](https://github.com/chanzuckerberg/biohub-data-cli/commit/05ed859f9791dbb06cb26f9bbc23b4d8dc954a35))
+
 ## 0.1.0 (2026-05-19)
 
 
