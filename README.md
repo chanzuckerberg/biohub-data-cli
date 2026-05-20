@@ -4,7 +4,7 @@
 [![Coverage](https://github.com/chanzuckerberg/biohub-data-cli/raw/badges/coverage.svg)](https://github.com/chanzuckerberg/biohub-data-cli/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/biohub-data-cli.svg)](https://pypi.org/project/biohub-data-cli/)
 
-Command-line tool for downloading datasets published by CZ Biohub. Resolves a collection ID to its constituent datasets and pulls every file in parallel from S3 and HTTP, with progress bars, size estimates, and dry-run accounting.
+Command-line tool for downloading datasets published by CZ Biohub. Resolves a collection ID to its constituent datasets and downloads files from S3 and HTTP, with progress bars, size estimates, and dry-run accounting.
 
 ## Installation
 
@@ -41,7 +41,7 @@ Download one or more collections by ID.
 | `-y, --yes` | Skip the size-estimate confirmation prompt. |
 | `--dry-run` | Print per-dataset size statistics without downloading. Mutually exclusive with `-y`. |
 
-**Dry run** resolves every S3 URI (listing prefixes, heading objects) to report exact byte totals per dataset. HTTP URLs are not sized during dry run and surface as a warning in the summary. A non-zero exit indicates at least one S3 URI could not be resolved.
+**Dry run** resolves every S3 URI (listing prefixes, heading objects) to report exact byte totals per dataset. HTTP URLs are not sized during dry run and surface as a warning in the summary.
 
 **Confirmation prompt** shows the aggregate size estimate before any bytes move. Pass `-y` to skip it in scripts.
 
