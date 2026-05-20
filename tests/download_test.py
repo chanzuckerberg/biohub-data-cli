@@ -583,7 +583,7 @@ def test_download_collections_emits_completed_with_byte_total(tmp_path):
 
 def test_download_collections_emits_failed_with_classified_reason(tmp_path):
     """A worker failure produces a `failed` event with the categorized reason
-    and no `bytes_downloaded` property."""
+    plus any bytes downloaded before the failure."""
     failure = DownloadFailure(
         collection_slug="test-collection",
         dataset_slug="matrix-a",
@@ -591,8 +591,12 @@ def test_download_collections_emits_failed_with_classified_reason(tmp_path):
         reason="HTTPSConnectionPool: Connection timed out",
     )
 
+    def partial_then_fail(url, outdir, coll, ds, on_bytes, on_size):
+        on_bytes(256)
+        return failure
+
     with (
-        patch("biohub_data_cli.download.download_http", return_value=failure),
+        patch("biohub_data_cli.download.download_http", side_effect=partial_then_fail),
         patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
         patch("biohub_data_cli.analytics.track") as mock_track,
     ):
@@ -610,6 +614,7 @@ def test_download_collections_emits_failed_with_classified_reason(tmp_path):
         "collection_id": "coll-1",
         "collection_slug": "test-collection",
         "collection_name": "Test Collection",
+        "bytes_downloaded": 256,
         "failure_reason": "network",
     }
     completed = [
@@ -638,6 +643,35 @@ def test_download_collections_no_terminal_event_on_keyboard_interrupt(tmp_path):
 
     types = [c.args[0] for c in mock_track.call_args_list]
     assert types == ["data_cli_collection_download_initiated"]
+
+
+def test_download_collections_emits_failed_on_unhandled_exception(tmp_path):
+    """An unhandled exception (not KeyboardInterrupt) re-raises but first
+    synthesizes a `failed` event for each collection without a recorded
+    failure, so the funnel reflects a real failure rather than abandonment."""
+
+    def raise_runtime(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    with (
+        patch("biohub_data_cli.download.download_http", side_effect=raise_runtime),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
+        patch("biohub_data_cli.analytics.track") as mock_track,
+    ):
+        with pytest.raises(RuntimeError, match="boom"):
+            download_collections([MOCK_COLLECTION], Path(tmp_path))
+
+    types = [c.args[0] for c in mock_track.call_args_list]
+    assert types[0] == "data_cli_collection_download_initiated"
+    failed = [
+        c
+        for c in mock_track.call_args_list
+        if c.args[0] == "data_cli_collection_download_failed"
+    ]
+    assert len(failed) == 1
+    props = failed[0].args[1]
+    assert props["collection_slug"] == "test-collection"
+    assert props["failure_reason"] == "other"
 
 
 def test_dry_run_with_yes_is_mutually_exclusive(tmp_path):

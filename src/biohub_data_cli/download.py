@@ -143,36 +143,58 @@ def download_collections(
     analytics.track_collection_downloads_initiated(collections)
 
     all_futures: list[Future] = []
+    display = DownloadDisplay()
 
-    with (
-        DownloadDisplay() as display,
-        ThreadPoolExecutor(max_workers=_HTTP_MAX_WORKERS) as http_pool,
-        ThreadPoolExecutor(max_workers=_S3_MAX_WORKERS) as s3_pool,
-    ):
-        for collection in collections:
-            for dataset in collection.datasets:
-                ds_outdir = outdir / collection.slug / dataset.slug
-                futs, submission_failures = submit_dataset_downloads(
-                    collection.slug,
-                    dataset,
-                    ds_outdir,
-                    http_pool,
-                    s3_pool,
-                    display,
-                )
-                for f in submission_failures:
-                    display.record_failure(f)
-                all_futures.extend(futs)
+    try:
+        with (
+            display,
+            ThreadPoolExecutor(max_workers=_HTTP_MAX_WORKERS) as http_pool,
+            ThreadPoolExecutor(max_workers=_S3_MAX_WORKERS) as s3_pool,
+        ):
+            for collection in collections:
+                for dataset in collection.datasets:
+                    ds_outdir = outdir / collection.slug / dataset.slug
+                    futs, submission_failures = submit_dataset_downloads(
+                        collection.slug,
+                        dataset,
+                        ds_outdir,
+                        http_pool,
+                        s3_pool,
+                        display,
+                    )
+                    for f in submission_failures:
+                        display.record_failure(f)
+                    all_futures.extend(futs)
 
-        try:
-            for future in as_completed(all_futures):
-                result = future.result()
-                if result is not None:
-                    display.record_failure(result)
-        except KeyboardInterrupt:
-            http_pool.shutdown(wait=False, cancel_futures=True)
-            s3_pool.shutdown(wait=False, cancel_futures=True)
-            raise
+            try:
+                for future in as_completed(all_futures):
+                    result = future.result()
+                    if result is not None:
+                        display.record_failure(result)
+            except KeyboardInterrupt:
+                http_pool.shutdown(wait=False, cancel_futures=True)
+                s3_pool.shutdown(wait=False, cancel_futures=True)
+                raise
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        already_failed = {f.collection_slug for f in display.failures}
+        synthetic = [
+            DownloadFailure(
+                collection_slug=c.slug,
+                dataset_slug="",
+                url="",
+                reason=f"unhandled {type(exc).__name__}: {exc}",
+            )
+            for c in collections
+            if c.slug not in already_failed
+        ]
+        analytics.track_collection_download_outcomes(
+            collections,
+            display.failures + synthetic,
+            display.get_bytes_by_collection(),
+        )
+        raise
 
     analytics.track_collection_download_outcomes(
         collections, display.failures, display.get_bytes_by_collection()

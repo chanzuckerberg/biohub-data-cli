@@ -274,7 +274,9 @@ def test_outcomes_emits_failed_with_classified_reason_when_failures_present():
     )
     with patch("biohub_data_cli.analytics.track") as mock_track:
         analytics.track_collection_download_outcomes(
-            collections=[coll], failures=[failure], bytes_by_collection={}
+            collections=[coll],
+            failures=[failure],
+            bytes_by_collection={"coll-a": 512},
         )
     mock_track.assert_called_once_with(
         "data_cli_collection_download_failed",
@@ -282,6 +284,7 @@ def test_outcomes_emits_failed_with_classified_reason_when_failures_present():
             "collection_id": "c1",
             "collection_slug": "coll-a",
             "collection_name": "Alpha",
+            "bytes_downloaded": 512,
             "failure_reason": "auth",
         },
     )
@@ -346,6 +349,7 @@ def test_outcomes_handles_mixed_success_and_failure_across_collections():
                 "collection_id": "c2",
                 "collection_slug": "coll-bad",
                 "collection_name": "Bad",
+                "bytes_downloaded": 0,
                 "failure_reason": "not_found",
             },
         ),

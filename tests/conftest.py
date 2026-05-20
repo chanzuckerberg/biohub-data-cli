@@ -11,6 +11,6 @@ def _disable_analytics(request, monkeypatch):
     needs the real track in place, so it's exempted here. Tests elsewhere that
     explicitly patch analytics.track to assert on calls nest cleanly over this
     no-op; their patch is restored on exit, leaving the no-op behind."""
-    if request.node.fspath.basename == "analytics_test.py":
+    if request.node.path.name == "analytics_test.py":
         return
     monkeypatch.setattr("biohub_data_cli.analytics.track", lambda *a, **k: None)

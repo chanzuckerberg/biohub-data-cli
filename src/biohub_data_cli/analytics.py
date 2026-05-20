@@ -125,7 +125,7 @@ def _classify_failure_reason(reason: str) -> str:
         return "not_found"
     if "403" in r or "401" in r or "accessdenied" in r or "forbidden" in r:
         return "auth"
-    if "enospc" in r or "no space" in r:
+    if "enospc" in r:
         return "disk"
     if (
         "timeout" in r
@@ -168,27 +168,22 @@ def track_collection_download_outcomes(
 ) -> None:
     """Emit one terminal event per collection: `data_cli_collection_download_completed`
     on success, `data_cli_collection_download_failed` on any recorded failure.
-    Bytes-downloaded only appears on completed events.
+    Both events carry `bytes_downloaded` so partial progress before a failure
+    is visible alongside successful totals.
     """
     first_failure_by_collection: dict[str, DownloadFailure] = {}
     for f in failures:
         first_failure_by_collection.setdefault(f.collection_slug, f)
     for collection in collections:
-        base_props = _collection_event_properties(collection)
+        props = {
+            **_collection_event_properties(collection),
+            "bytes_downloaded": bytes_by_collection.get(collection.slug, 0),
+        }
         failure = first_failure_by_collection.get(collection.slug)
         if failure is not None:
             track(
                 "data_cli_collection_download_failed",
-                {
-                    **base_props,
-                    "failure_reason": _classify_failure_reason(failure.reason),
-                },
+                {**props, "failure_reason": _classify_failure_reason(failure.reason)},
             )
         else:
-            track(
-                "data_cli_collection_download_completed",
-                {
-                    **base_props,
-                    "bytes_downloaded": bytes_by_collection.get(collection.slug, 0),
-                },
-            )
+            track("data_cli_collection_download_completed", props)
