@@ -140,7 +140,7 @@ def _classify_failure_reason(reason: str) -> str:
     return "other"
 
 
-def _collection_event_properties(collection: Collection) -> dict[str, str]:
+def _collection_event_properties(collection: Collection) -> dict[str, Any]:
     """Base property bag every collection-scoped event ships with."""
     return {
         "collection_id": collection.id,
