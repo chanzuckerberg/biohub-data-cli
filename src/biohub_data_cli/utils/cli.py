@@ -55,6 +55,10 @@ class DownloadDisplay:
     def __init__(self) -> None:
         self.progress = make_progress()
         self.failures: list[DownloadFailure] = []
+        # task_id -> collection_slug. Written once at task creation time
+        # (single-threaded). Used after the download flow to group each task's
+        # bytes (read off Progress.tasks[i].completed) by collection.
+        self._task_collection: dict[TaskID, str] = {}
         self._tree = Tree("[bold red]Failures[/bold red]")
         # collection_slug -> its branch under the root tree. Memoized so multiple
         # failures in the same collection don't create duplicate branches.
@@ -81,6 +85,15 @@ class DownloadDisplay:
     ) -> bool | None:
         return self._live.__exit__(exc_type, exc, tb)
 
+    def add_dataset_download_task(
+        self, label: str, collection_slug: str, total: int | None
+    ) -> TaskID:
+        """Create a per-dataset progress task and register it under its collection
+        so get_bytes_by_collection() can group the task's bytes correctly later."""
+        task_id = self.progress.add_task(label, total=total)
+        self._task_collection[task_id] = collection_slug
+        return task_id
+
     def advance_task(self, task_id: TaskID, n: int) -> None:
         """Bump one Progress task by `n` bytes.
 
@@ -88,6 +101,17 @@ class DownloadDisplay:
         No lock needed, since rich takes care of concurrent updates.
         """
         self.progress.update(task_id, advance=n)
+
+    def get_bytes_by_collection(self) -> dict[str, int]:
+        """Sum each task's downloaded bytes (from rich's `Progress.tasks`)
+        grouped by the collection_slug it was registered under in
+        add_dataset_download_task. Intended to be read after the download flow finishes."""
+        totals: dict[str, int] = {}
+        for task in self.progress.tasks:
+            coll = self._task_collection.get(task.id)
+            if coll is not None:
+                totals[coll] = totals.get(coll, 0) + int(task.completed)
+        return totals
 
     def grow_task_total(self, task_id: TaskID, n: int) -> None:
         """Add `n` bytes to one task's total.

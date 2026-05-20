@@ -198,3 +198,17 @@ def test_grow_task_total_is_thread_safe_under_concurrent_workers():
 
     task = next(t for t in d.progress.tasks if t.id == task_id)
     assert task.total == n_threads * per_thread
+
+
+# ── DownloadDisplay.add_dataset_download_task / get_bytes_by_collection ─────
+
+
+def test_add_dataset_download_task_registers_collection_for_bytes_aggregation():
+    d = DownloadDisplay()
+    t1 = d.add_dataset_download_task("coll-a/ds-1", "coll-a", total=1000)
+    t2 = d.add_dataset_download_task("coll-a/ds-2", "coll-a", total=1000)
+    t3 = d.add_dataset_download_task("coll-b/ds-1", "coll-b", total=1000)
+    d.advance_task(t1, 100)
+    d.advance_task(t2, 250)
+    d.advance_task(t3, 50)
+    assert d.get_bytes_by_collection() == {"coll-a": 350, "coll-b": 50}

@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 from rich.markup import escape
 
+from biohub_data_cli import analytics
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
 from biohub_data_cli.utils.cli import DownloadDisplay, console
 from biohub_data_cli.utils.http import download_http
@@ -100,9 +101,10 @@ def submit_dataset_downloads(
     # HTTP totals get added as workers learn Content-Length (see on_size_known).
     # If no initial total, fall back to the curator-provided file_size_bytes.
     initial_total = sum(size for _, size in s3_objects) or dataset.file_size_bytes
-    task_id = display.progress.add_task(
+    task_id = display.add_dataset_download_task(
         escape(f"{collection_slug}/{dataset.slug}"),
-        total=initial_total or None,
+        collection_slug,
+        initial_total or None,
     )
     on_bytes_downloaded = functools.partial(display.advance_task, task_id)
     on_size_known = functools.partial(display.grow_task_total, task_id)
@@ -138,6 +140,8 @@ def download_collections(
     collections: list[Collection], outdir: Path
 ) -> list[DownloadFailure]:
     """Download all datasets across all collections via shared HTTP and S3 pools."""
+    analytics.track_collection_downloads_initiated(collections)
+
     all_futures: list[Future] = []
 
     with (
@@ -169,6 +173,10 @@ def download_collections(
             http_pool.shutdown(wait=False, cancel_futures=True)
             s3_pool.shutdown(wait=False, cancel_futures=True)
             raise
+
+    analytics.track_collection_download_outcomes(
+        collections, display.failures, display.get_bytes_by_collection()
+    )
 
     return display.failures
 

@@ -523,6 +523,123 @@ def test_dry_run_exits_nonzero_when_size_lookups_fail(tmp_path):
     mock_dl.assert_not_called()
 
 
+# ── analytics emission ──────────────────────────────────────────────────────
+
+
+def test_download_collections_emits_initiated_per_collection(tmp_path):
+    coll_a = MOCK_COLLECTION.model_copy(
+        update={"id": "a", "slug": "coll-a", "title": "Alpha"}
+    )
+    coll_b = MOCK_COLLECTION.model_copy(
+        update={"id": "b", "slug": "coll-b", "title": "Beta"}
+    )
+
+    with (
+        patch("biohub_data_cli.download.download_http", return_value=None),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
+        patch("biohub_data_cli.analytics.track") as mock_track,
+    ):
+        download_collections([coll_a, coll_b], Path(tmp_path))
+
+    initiated = [
+        c
+        for c in mock_track.call_args_list
+        if c.args[0] == "data_cli_collection_download_initiated"
+    ]
+    assert [c.args[1] for c in initiated] == [
+        {"collection_id": "a", "collection_slug": "coll-a", "collection_name": "Alpha"},
+        {"collection_id": "b", "collection_slug": "coll-b", "collection_name": "Beta"},
+    ]
+
+
+def test_download_collections_emits_completed_with_byte_total(tmp_path):
+    def advance_then_succeed(url, outdir, coll, ds, on_bytes, on_size):
+        on_bytes(1024)
+        return None
+
+    with (
+        patch(
+            "biohub_data_cli.download.download_http", side_effect=advance_then_succeed
+        ),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
+        patch("biohub_data_cli.analytics.track") as mock_track,
+    ):
+        failures = download_collections([MOCK_COLLECTION], Path(tmp_path))
+
+    assert failures == []
+    completed = [
+        c
+        for c in mock_track.call_args_list
+        if c.args[0] == "data_cli_collection_download_completed"
+    ]
+    assert len(completed) == 1
+    assert completed[0].args[1] == {
+        "collection_id": "coll-1",
+        "collection_slug": "test-collection",
+        "collection_name": "Test Collection",
+        "bytes_downloaded": 1024,
+    }
+
+
+def test_download_collections_emits_failed_with_classified_reason(tmp_path):
+    """A worker failure produces a `failed` event with the categorized reason
+    and no `bytes_downloaded` property."""
+    failure = DownloadFailure(
+        collection_slug="test-collection",
+        dataset_slug="matrix-a",
+        url="https://example.com/a.parquet",
+        reason="HTTPSConnectionPool: Connection timed out",
+    )
+
+    with (
+        patch("biohub_data_cli.download.download_http", return_value=failure),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
+        patch("biohub_data_cli.analytics.track") as mock_track,
+    ):
+        failures = download_collections([MOCK_COLLECTION], Path(tmp_path))
+
+    assert failures == [failure]
+    emitted = [
+        c
+        for c in mock_track.call_args_list
+        if c.args[0] == "data_cli_collection_download_failed"
+    ]
+    assert len(emitted) == 1
+    props = emitted[0].args[1]
+    assert props == {
+        "collection_id": "coll-1",
+        "collection_slug": "test-collection",
+        "collection_name": "Test Collection",
+        "failure_reason": "network",
+    }
+    completed = [
+        c
+        for c in mock_track.call_args_list
+        if c.args[0] == "data_cli_collection_download_completed"
+    ]
+    assert completed == []
+
+
+def test_download_collections_no_terminal_event_on_keyboard_interrupt(tmp_path):
+    """Ctrl-C should propagate without emitting completed or failed — the
+    initiated event already fired, leaving the run looking like abandonment
+    rather than a real failure."""
+
+    def raise_kbd(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    with (
+        patch("biohub_data_cli.download.download_http", side_effect=raise_kbd),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
+        patch("biohub_data_cli.analytics.track") as mock_track,
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            download_collections([MOCK_COLLECTION], Path(tmp_path))
+
+    types = [c.args[0] for c in mock_track.call_args_list]
+    assert types == ["data_cli_collection_download_initiated"]
+
+
 def test_dry_run_with_yes_is_mutually_exclusive(tmp_path):
     with patch("biohub_data_cli.download.fetch_collection") as mock_fetch:
         mock_fetch.return_value = MOCK_COLLECTION

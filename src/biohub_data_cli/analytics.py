@@ -17,6 +17,8 @@ from typing import Any
 from amplitude import Amplitude, BaseEvent
 from platformdirs import user_config_dir
 
+from biohub_data_cli.models import Collection, DownloadFailure
+
 _APP_NAME = "biohub-data-cli"
 
 # Amplitude write keys are intentionally embedded in the published package, as is
@@ -102,3 +104,91 @@ def track(event_type: str, properties: dict[str, Any] | None = None) -> None:
         )
     except Exception:
         pass
+
+
+def _classify_failure_reason(reason: str) -> str:
+    """Map a free-form DownloadFailure.reason to a coarse Amplitude category.
+
+    Categories are intentionally small so they remain useful as a chart
+    breakdown — anything finer-grained belongs in logs. The matching is
+    substring-based against the lowercased reason; producers (http/s3 utils)
+    pass through OS / boto / requests error strings, so the patterns target
+    the conventional wording those libraries emit.
+    """
+    r = reason.lower()
+    if (
+        "404" in r
+        or "nosuchkey" in r
+        or "no object found" in r
+        or "no objects found" in r
+    ):
+        return "not_found"
+    if "403" in r or "401" in r or "accessdenied" in r or "forbidden" in r:
+        return "auth"
+    if "enospc" in r or "no space" in r:
+        return "disk"
+    if (
+        "timeout" in r
+        or "timed out" in r
+        or "connection" in r
+        or "name resolution" in r
+        or "dns" in r
+    ):
+        return "network"
+    if "unsupported url scheme" in r:
+        return "unsupported_url"
+    return "other"
+
+
+def _collection_event_properties(collection: Collection) -> dict[str, str]:
+    """Base property bag every collection-scoped event ships with."""
+    return {
+        "collection_id": collection.id,
+        "collection_slug": collection.slug,
+        "collection_name": collection.title,
+    }
+
+
+def track_collection_downloads_initiated(collections: list[Collection]) -> None:
+    """Emit `data_cli_collection_download_initiated` once per collection. Paired
+    with `track_collection_download_outcomes` to form the initiated→terminal
+    funnel; missing terminal events (e.g. on KeyboardInterrupt) register as
+    abandonment in Amplitude funnel reports."""
+    for collection in collections:
+        track(
+            "data_cli_collection_download_initiated",
+            _collection_event_properties(collection),
+        )
+
+
+def track_collection_download_outcomes(
+    collections: list[Collection],
+    failures: list[DownloadFailure],
+    bytes_by_collection: dict[str, int],
+) -> None:
+    """Emit one terminal event per collection: `data_cli_collection_download_completed`
+    on success, `data_cli_collection_download_failed` on any recorded failure.
+    Bytes-downloaded only appears on completed events.
+    """
+    first_failure_by_collection: dict[str, DownloadFailure] = {}
+    for f in failures:
+        first_failure_by_collection.setdefault(f.collection_slug, f)
+    for collection in collections:
+        base_props = _collection_event_properties(collection)
+        failure = first_failure_by_collection.get(collection.slug)
+        if failure is not None:
+            track(
+                "data_cli_collection_download_failed",
+                {
+                    **base_props,
+                    "failure_reason": _classify_failure_reason(failure.reason),
+                },
+            )
+        else:
+            track(
+                "data_cli_collection_download_completed",
+                {
+                    **base_props,
+                    "bytes_downloaded": bytes_by_collection.get(collection.slug, 0),
+                },
+            )
