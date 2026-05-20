@@ -29,6 +29,8 @@ jobs:
 
   run-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       UV_FROZEN: true
     steps:
@@ -48,6 +50,23 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest -v tests/ --cov=biohub_data_cli --cov-report=term-missing
+
+      - name: Generate coverage badge
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p badges
+          uv run --with coverage-badge coverage-badge -f -o badges/coverage.svg
+
+      - name: Deploy badges
+        if: github.event_name == 'push'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./badges
+          publish_branch: badges
+          keep_files: true
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
 
   build-package:
     name: build package
