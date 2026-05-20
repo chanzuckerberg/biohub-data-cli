@@ -145,7 +145,7 @@ def _collection_event_properties(collection: Collection) -> dict[str, Any]:
     return {
         "collection_id": collection.id,
         "collection_slug": collection.slug,
-        "collection_name": collection.title,
+        "collection_title": collection.title,
     }
 
 

@@ -552,12 +552,12 @@ def test_download_collections_emits_initiated_per_collection(tmp_path):
             {
                 "collection_id": "a",
                 "collection_slug": "coll-a",
-                "collection_name": "Alpha",
+                "collection_title": "Alpha",
             },
             {
                 "collection_id": "b",
                 "collection_slug": "coll-b",
-                "collection_name": "Beta",
+                "collection_title": "Beta",
             },
         ],
     }

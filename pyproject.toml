@@ -34,6 +34,7 @@ addopts = "-m 'not integration'"
 markers = [
     "integration: tests that hit real S3 buckets / HTTP servers",
     "slow: tests that download large fixtures (~GB+)",
+    "real_analytics: opts out of the autouse track() no-op so the analytics module can be exercised end-to-end",
 ]
 
 [dependency-groups]

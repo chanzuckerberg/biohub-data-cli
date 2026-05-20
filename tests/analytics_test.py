@@ -5,6 +5,8 @@ import pytest
 from biohub_data_cli import analytics
 from biohub_data_cli.models import Collection, DownloadFailure
 
+pytestmark = pytest.mark.real_analytics
+
 
 @pytest.fixture(autouse=True)
 def reset_analytics_state(tmp_path, monkeypatch):
@@ -196,12 +198,12 @@ def test_initiated_emits_one_event_carrying_all_collections():
                 {
                     "collection_id": "c1",
                     "collection_slug": "a",
-                    "collection_name": "Alpha",
+                    "collection_title": "Alpha",
                 },
                 {
                     "collection_id": "c2",
                     "collection_slug": "b",
-                    "collection_name": "Beta",
+                    "collection_title": "Beta",
                 },
             ],
         },

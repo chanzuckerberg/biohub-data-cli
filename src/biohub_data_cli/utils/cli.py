@@ -82,7 +82,6 @@ class DownloadDisplay:
         return self._live.__exit__(exc_type, exc, tb)
 
     def add_dataset_download_task(self, label: str, total: int | None) -> TaskID:
-        """Create a per-dataset progress task."""
         return self.progress.add_task(label, total=total)
 
     def advance_task(self, task_id: TaskID, n: int) -> None:
@@ -96,8 +95,10 @@ class DownloadDisplay:
     def get_total_bytes_downloaded(self) -> int:
         """Sum downloaded bytes across every task in this display. Scoped to a
         single CLI command run (one DownloadDisplay per `download_collections`
-        call, one task per dataset). Intended to be read after the download
-        flow finishes."""
+        call, one task per dataset).
+
+        Should be called after all workers have stopped writing.
+        """
         return sum(int(task.completed) for task in self.progress.tasks)
 
     def grow_task_total(self, task_id: TaskID, n: int) -> None:
