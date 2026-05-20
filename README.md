@@ -3,7 +3,6 @@
 [![CI](https://github.com/chanzuckerberg/biohub-data-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/chanzuckerberg/biohub-data-cli/actions/workflows/ci.yml)
 [![Coverage](https://github.com/chanzuckerberg/biohub-data-cli/raw/badges/coverage.svg)](https://github.com/chanzuckerberg/biohub-data-cli/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/biohub-data-cli.svg)](https://pypi.org/project/biohub-data-cli/)
-[![Python](https://img.shields.io/pypi/pyversions/biohub-data-cli.svg)](https://pypi.org/project/biohub-data-cli/)
 
 Command-line tool for downloading datasets published by CZ Biohub. Resolves a collection ID to its constituent datasets and pulls every file in parallel from S3 and HTTP, with progress bars, size estimates, and dry-run accounting.
 
