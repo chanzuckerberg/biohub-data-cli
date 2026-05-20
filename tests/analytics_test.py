@@ -179,7 +179,7 @@ def test_track_caller_properties_not_mutated(monkeypatch):
 # ── track_collection_downloads_initiated ────────────────────────────────────
 
 
-def test_initiated_emits_one_event_per_collection():
+def test_initiated_emits_one_event_carrying_all_collections():
     coll_a = Collection.model_validate(
         {"id": "c1", "slug": "a", "title": "Alpha", "datasets": []}
     )
@@ -189,16 +189,23 @@ def test_initiated_emits_one_event_per_collection():
     with patch("biohub_data_cli.analytics.track") as mock_track:
         analytics.track_collection_downloads_initiated([coll_a, coll_b])
 
-    assert [c.args for c in mock_track.call_args_list] == [
-        (
-            "data_cli_collection_download_initiated",
-            {"collection_id": "c1", "collection_slug": "a", "collection_name": "Alpha"},
-        ),
-        (
-            "data_cli_collection_download_initiated",
-            {"collection_id": "c2", "collection_slug": "b", "collection_name": "Beta"},
-        ),
-    ]
+    mock_track.assert_called_once_with(
+        "data_cli_collection_download_initiated",
+        {
+            "collections": [
+                {
+                    "collection_id": "c1",
+                    "collection_slug": "a",
+                    "collection_name": "Alpha",
+                },
+                {
+                    "collection_id": "c2",
+                    "collection_slug": "b",
+                    "collection_name": "Beta",
+                },
+            ],
+        },
+    )
 
 
 # ── _classify_failure_reason ────────────────────────────────────────────────
@@ -227,45 +234,16 @@ def test_classify_failure_reason(reason, expected):
 # ── track_collection_download_outcomes ──────────────────────────────────────
 
 
-def _make_collection(coll_id: str, slug: str, title: str) -> Collection:
-    """Minimal Collection with one placeholder dataset (downloads aren't run here)."""
-    return Collection.model_validate(
-        {
-            "id": coll_id,
-            "slug": slug,
-            "title": title,
-            "datasets": [
-                {
-                    "id": "ds-1",
-                    "slug": "ds-1",
-                    "title": "DS",
-                    "file_format": "parquet",
-                    "urls": ["https://example.com/x.parquet"],
-                }
-            ],
-        }
-    )
-
-
-def test_outcomes_emits_completed_when_collection_has_no_failures():
-    coll = _make_collection("c1", "coll-a", "Alpha")
+def test_outcomes_emits_completed_when_there_are_no_failures():
     with patch("biohub_data_cli.analytics.track") as mock_track:
-        analytics.track_collection_download_outcomes(
-            collections=[coll], failures=[], bytes_by_collection={"coll-a": 4096}
-        )
+        analytics.track_collection_download_outcomes(failures=[], bytes_downloaded=4096)
     mock_track.assert_called_once_with(
         "data_cli_collection_download_completed",
-        {
-            "collection_id": "c1",
-            "collection_slug": "coll-a",
-            "collection_name": "Alpha",
-            "bytes_downloaded": 4096,
-        },
+        {"bytes_downloaded": 4096},
     )
 
 
 def test_outcomes_emits_failed_with_classified_reason_when_failures_present():
-    coll = _make_collection("c1", "coll-a", "Alpha")
     failure = DownloadFailure(
         collection_slug="coll-a",
         dataset_slug="ds-1",
@@ -274,25 +252,17 @@ def test_outcomes_emits_failed_with_classified_reason_when_failures_present():
     )
     with patch("biohub_data_cli.analytics.track") as mock_track:
         analytics.track_collection_download_outcomes(
-            collections=[coll],
-            failures=[failure],
-            bytes_by_collection={"coll-a": 512},
+            failures=[failure], bytes_downloaded=512
         )
     mock_track.assert_called_once_with(
         "data_cli_collection_download_failed",
-        {
-            "collection_id": "c1",
-            "collection_slug": "coll-a",
-            "collection_name": "Alpha",
-            "bytes_downloaded": 512,
-            "failure_reason": "auth",
-        },
+        {"bytes_downloaded": 512, "failure_reasons": ["auth"]},
     )
 
 
-def test_outcomes_only_first_failure_per_collection_drives_reason():
-    """Multiple failures in one collection — only the first one's reason is emitted."""
-    coll = _make_collection("c1", "coll-a", "Alpha")
+def test_outcomes_failure_reasons_deduped_and_sorted():
+    """Multiple failures spanning categories collapse to a sorted, deduped
+    list — one terminal event per run regardless of how many workers failed."""
     failures = [
         DownloadFailure(
             collection_slug="coll-a",
@@ -304,64 +274,28 @@ def test_outcomes_only_first_failure_per_collection_drives_reason():
             collection_slug="coll-a",
             dataset_slug="ds-2",
             url="u2",
-            reason="403 Forbidden",  # → auth, ignored
+            reason="403 Forbidden",  # → auth
+        ),
+        DownloadFailure(
+            collection_slug="coll-b",
+            dataset_slug="ds-1",
+            url="u3",
+            reason="HTTPSConnectionPool: Read timed out",  # → network (dup)
         ),
     ]
     with patch("biohub_data_cli.analytics.track") as mock_track:
         analytics.track_collection_download_outcomes(
-            collections=[coll], failures=failures, bytes_by_collection={}
+            failures=failures, bytes_downloaded=0
         )
-    assert mock_track.call_args.args[1]["failure_reason"] == "network"
+    assert mock_track.call_args.args[1]["failure_reasons"] == ["auth", "network"]
 
 
-def test_outcomes_handles_mixed_success_and_failure_across_collections():
-    """One completed event and one failed event when two collections have
-    different outcomes — verifies that we don't lump them together."""
-    coll_ok = _make_collection("c1", "coll-ok", "OK")
-    coll_bad = _make_collection("c2", "coll-bad", "Bad")
-    failure = DownloadFailure(
-        collection_slug="coll-bad",
-        dataset_slug="ds-1",
-        url="u",
-        reason="NoSuchKey",
+def test_outcomes_zero_bytes_still_emits_completed_when_no_failures():
+    """An all-empty download (e.g. every dataset had empty URL lists) still
+    emits a completed event with 0 bytes."""
+    with patch("biohub_data_cli.analytics.track") as mock_track:
+        analytics.track_collection_download_outcomes(failures=[], bytes_downloaded=0)
+    mock_track.assert_called_once_with(
+        "data_cli_collection_download_completed",
+        {"bytes_downloaded": 0},
     )
-    with patch("biohub_data_cli.analytics.track") as mock_track:
-        analytics.track_collection_download_outcomes(
-            collections=[coll_ok, coll_bad],
-            failures=[failure],
-            bytes_by_collection={"coll-ok": 100},
-        )
-
-    events = [(c.args[0], c.args[1]) for c in mock_track.call_args_list]
-    assert events == [
-        (
-            "data_cli_collection_download_completed",
-            {
-                "collection_id": "c1",
-                "collection_slug": "coll-ok",
-                "collection_name": "OK",
-                "bytes_downloaded": 100,
-            },
-        ),
-        (
-            "data_cli_collection_download_failed",
-            {
-                "collection_id": "c2",
-                "collection_slug": "coll-bad",
-                "collection_name": "Bad",
-                "bytes_downloaded": 0,
-                "failure_reason": "not_found",
-            },
-        ),
-    ]
-
-
-def test_outcomes_missing_bytes_entry_treated_as_zero():
-    """A successful collection that never accumulated any bytes (e.g. all its
-    datasets had empty URL lists) still emits a completed event with 0 bytes."""
-    coll = _make_collection("c1", "coll-a", "Alpha")
-    with patch("biohub_data_cli.analytics.track") as mock_track:
-        analytics.track_collection_download_outcomes(
-            collections=[coll], failures=[], bytes_by_collection={}
-        )
-    assert mock_track.call_args.args[1]["bytes_downloaded"] == 0

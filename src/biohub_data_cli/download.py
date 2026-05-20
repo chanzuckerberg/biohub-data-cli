@@ -103,7 +103,6 @@ def submit_dataset_downloads(
     initial_total = sum(size for _, size in s3_objects) or dataset.file_size_bytes
     task_id = display.add_dataset_download_task(
         escape(f"{collection_slug}/{dataset.slug}"),
-        collection_slug,
         initial_total or None,
     )
     on_bytes_downloaded = functools.partial(display.advance_task, task_id)
@@ -175,26 +174,20 @@ def download_collections(
             s3_pool.shutdown(wait=False, cancel_futures=True)
             raise
         except Exception as exc:
-            already_failed = {f.collection_slug for f in display.failures}
-            synthetic = [
-                DownloadFailure(
-                    collection_slug=c.slug,
-                    dataset_slug="",
-                    url="",
-                    reason=f"unhandled {type(exc).__name__}: {exc}",
-                )
-                for c in collections
-                if c.slug not in already_failed
-            ]
+            synthetic = DownloadFailure(
+                collection_slug="",
+                dataset_slug="",
+                url="",
+                reason=f"unhandled {type(exc).__name__}: {exc}",
+            )
             analytics.track_collection_download_outcomes(
-                collections,
-                display.failures + synthetic,
-                display.get_bytes_by_collection(),
+                display.failures + [synthetic],
+                display.get_total_bytes_downloaded(),
             )
             raise
 
     analytics.track_collection_download_outcomes(
-        collections, display.failures, display.get_bytes_by_collection()
+        display.failures, display.get_total_bytes_downloaded()
     )
 
     return display.failures

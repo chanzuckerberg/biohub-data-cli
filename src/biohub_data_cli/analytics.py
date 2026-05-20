@@ -150,40 +150,38 @@ def _collection_event_properties(collection: Collection) -> dict[str, Any]:
 
 
 def track_collection_downloads_initiated(collections: list[Collection]) -> None:
-    """Emit `data_cli_collection_download_initiated` once per collection. Paired
-    with `track_collection_download_outcomes` to form the initiated→terminal
-    funnel; missing terminal events (e.g. on KeyboardInterrupt) register as
+    """Emit one `data_cli_collection_download_initiated` event per command run, carrying
+    the full list of collections being downloaded. Paired with
+    `track_collection_download_outcomes` to form the initiated→terminal funnel;
+    a missing terminal event (e.g. on KeyboardInterrupt) registers as
     abandonment in Amplitude funnel reports."""
-    for collection in collections:
-        track(
-            "data_cli_collection_download_initiated",
-            _collection_event_properties(collection),
-        )
+    track(
+        "data_cli_collection_download_initiated",
+        {"collections": [_collection_event_properties(c) for c in collections]},
+    )
 
 
 def track_collection_download_outcomes(
-    collections: list[Collection],
     failures: list[DownloadFailure],
-    bytes_by_collection: dict[str, int],
+    bytes_downloaded: int,
 ) -> None:
-    """Emit one terminal event per collection: `data_cli_collection_download_completed`
-    on success, `data_cli_collection_download_failed` on any recorded failure.
-    Both events carry `bytes_downloaded` so partial progress before a failure
-    is visible alongside successful totals.
+    """Emit one terminal event per run: `data_cli_collection_download_completed`
+    when no failures were recorded, `data_cli_collection_download_failed`
+    otherwise. Both events carry `bytes_downloaded` summed across every dataset
+    so partial progress before a failure is visible alongside successful totals.
     """
-    first_failure_by_collection: dict[str, DownloadFailure] = {}
-    for f in failures:
-        first_failure_by_collection.setdefault(f.collection_slug, f)
-    for collection in collections:
-        props = {
-            **_collection_event_properties(collection),
-            "bytes_downloaded": bytes_by_collection.get(collection.slug, 0),
-        }
-        failure = first_failure_by_collection.get(collection.slug)
-        if failure is not None:
-            track(
-                "data_cli_collection_download_failed",
-                {**props, "failure_reason": _classify_failure_reason(failure.reason)},
-            )
-        else:
-            track("data_cli_collection_download_completed", props)
+    if not failures:
+        track(
+            "data_cli_collection_download_completed",
+            {"bytes_downloaded": bytes_downloaded},
+        )
+        return
+    track(
+        "data_cli_collection_download_failed",
+        {
+            "bytes_downloaded": bytes_downloaded,
+            "failure_reasons": sorted(
+                {_classify_failure_reason(f.reason) for f in failures}
+            ),
+        },
+    )
