@@ -9,7 +9,7 @@ _OPS_SERVICE_URL_OVERRIDE_ENV = "OPS_SERVICE_URL_OVERRIDE"
 
 
 def service_url() -> str:
-    """BHP service base URL. Set $OPS_SERVICE_URL_OVERRIDE for local dev."""
+    """OPS backend service base URL. Set $OPS_SERVICE_URL_OVERRIDE for local dev."""
     url = os.environ.get(_OPS_SERVICE_URL_OVERRIDE_ENV) or _OPS_SERVICE_URL
     if not url:
         raise RuntimeError(
