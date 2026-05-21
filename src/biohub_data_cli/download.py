@@ -10,7 +10,11 @@ from rich.markup import escape
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
 from biohub_data_cli.utils.cli import DownloadDisplay, console
 from biohub_data_cli.utils.http import download_http
-from biohub_data_cli.utils.s3 import download_s3_object, resolve_s3_uris
+from biohub_data_cli.utils.s3 import (
+    S3_MAX_WORKERS,
+    download_s3_object,
+    resolve_s3_uris,
+)
 from biohub_data_cli.utils.stats import (
     aggregate_dry_run_stats,
     estimate_size_summary,
@@ -19,7 +23,6 @@ from biohub_data_cli.utils.stats import (
 )
 
 _HTTP_MAX_WORKERS = 10
-_S3_MAX_WORKERS = 10
 
 _FIXTURES_DIR_ENV = "DATA_CLI_FIXTURES_DIR"
 
@@ -152,7 +155,7 @@ def download_collections(
     with (
         DownloadDisplay() as display,
         ThreadPoolExecutor(max_workers=_HTTP_MAX_WORKERS) as http_pool,
-        ThreadPoolExecutor(max_workers=_S3_MAX_WORKERS) as s3_pool,
+        ThreadPoolExecutor(max_workers=S3_MAX_WORKERS) as s3_pool,
     ):
         for collection in collections:
             for dataset in collection.datasets:

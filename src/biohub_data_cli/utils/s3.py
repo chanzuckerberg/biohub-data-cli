@@ -15,6 +15,7 @@ from biohub_data_cli.utils.cli import DownloadCancelled, safe_join
 
 _S3_MULTIPART_SIZE = 16 * 1024 * 1024  # 16 MB
 _S3_MAX_CONCURRENCY = 8
+S3_MAX_WORKERS = 10
 
 
 @functools.cache
@@ -23,7 +24,20 @@ def _make_s3_client():
     # Constructing a fresh client per call adds non-trivial overhead when
     # downloading many small objects (e.g. Zarr chunks).
     # Unsigned access — only support public buckets. Private buckets will raise ClientError.
-    return boto3.client("s3", config=BotoConfig(signature_version=UNSIGNED))
+    #
+    # max_pool_connections sized for the worst case: every dataset-level worker
+    # running a multipart download at full concurrency simultaneously. Default
+    # is 10. Below this ceiling, urllib3 logs "Connection pool is full,
+    # discarding connection" warnings and boto3's internal retry path can
+    # swallow progress callbacks (bar stalls below 100% even though the file
+    # lands on disk correctly).
+    return boto3.client(
+        "s3",
+        config=BotoConfig(
+            signature_version=UNSIGNED,
+            max_pool_connections=S3_MAX_WORKERS * _S3_MAX_CONCURRENCY,
+        ),
+    )
 
 
 def s3_url_to_local_path(uri: str, outdir: Path) -> Path:
