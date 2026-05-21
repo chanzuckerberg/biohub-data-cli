@@ -50,7 +50,7 @@ def submit_dataset_downloads(
     http_pool: ThreadPoolExecutor,
     s3_pool: ThreadPoolExecutor,
     display: DownloadDisplay,
-    cancel: threading.Event | None = None,
+    cancel: threading.Event,
 ) -> tuple[list[Future], list[DownloadFailure]]:
     """Submit one dataset's downloads to the shared pools.
 

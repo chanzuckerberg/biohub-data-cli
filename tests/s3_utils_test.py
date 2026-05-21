@@ -17,6 +17,10 @@ from biohub_data_cli.utils.s3 import (
 def _ignore_bytes(_: int) -> None: ...
 
 
+# Never-set event for tests that don't exercise the cancel path.
+_NEVER_CANCEL = threading.Event()
+
+
 # Every mocked S3 object in this test file reports this fake size; expected
 # tuples use it so we can verify expand_s3_location wires Size through.
 _MOCK_OBJECT_SIZE = 100
@@ -239,7 +243,12 @@ def test_download_s3_object_success(tmp_path):
     ):
         mock_transfer.return_value.download_file.side_effect = fake_download
         result = download_s3_object(
-            "s3://bucket/prefix/file.h5ad", tmp_path, "coll", "ds", _ignore_bytes
+            "s3://bucket/prefix/file.h5ad",
+            tmp_path,
+            "coll",
+            "ds",
+            _ignore_bytes,
+            _NEVER_CANCEL,
         )
     assert result is None
     assert (tmp_path / "prefix" / "file.h5ad").exists()
@@ -260,6 +269,7 @@ def test_download_s3_object_records_failure(tmp_path):
             "my-coll",
             "my-ds",
             _ignore_bytes,
+            _NEVER_CANCEL,
         )
     assert result is not None
     assert "file.h5ad" in result.url

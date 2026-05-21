@@ -132,7 +132,7 @@ def download_s3_object(
     collection_slug: str,
     dataset_slug: str,
     on_bytes_downloaded: Callable[[int], None],
-    cancel: threading.Event | None = None,
+    cancel: threading.Event,
 ) -> DownloadFailure | None:
     """Download a single S3 object into outdir, preserving the full S3 key structure.
 
@@ -150,7 +150,7 @@ def download_s3_object(
     tmp = outpath.with_name(outpath.name + ".part")
 
     def callback(n: int) -> None:
-        if cancel is not None and cancel.is_set():
+        if cancel.is_set():
             raise DownloadCancelled("cancelled")
         on_bytes_downloaded(n)
 

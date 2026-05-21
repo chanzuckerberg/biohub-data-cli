@@ -37,7 +37,7 @@ def download_http(
     dataset_slug: str,
     on_bytes_downloaded: Callable[[int], None],
     on_size_known: Callable[[int], None],
-    cancel: threading.Event | None = None,
+    cancel: threading.Event,
 ) -> DownloadFailure | None:
     """Download `url` to `outdir/<filename>`.
 
@@ -72,7 +72,7 @@ def download_http(
                     pass  # malformed header — fall through, just no total update
             with open(tmp, "wb") as f:
                 for chunk in r.iter_content(chunk_size=_HTTP_CHUNK_SIZE):
-                    if cancel is not None and cancel.is_set():
+                    if cancel.is_set():
                         raise DownloadCancelled("cancelled")
                     if chunk:
                         f.write(chunk)

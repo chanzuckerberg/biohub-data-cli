@@ -10,6 +10,10 @@ def _ignore_bytes(_: int) -> None: ...
 def _ignore_size(_: int) -> None: ...
 
 
+# Never-set event for tests that don't exercise the cancel path.
+_NEVER_CANCEL = threading.Event()
+
+
 def test_http_url_to_local_path(tmp_path):
     result = http_url_to_local_path("https://example.com/dir1/dir2/data.h5ad", tmp_path)
     assert result == tmp_path / "data.h5ad"
@@ -37,6 +41,7 @@ def test_download_http_success(tmp_path):
             "ds",
             _ignore_bytes,
             _ignore_size,
+            _NEVER_CANCEL,
         )
 
     assert result is None
@@ -54,6 +59,7 @@ def test_download_http_records_failure(tmp_path):
             "my-ds",
             _ignore_bytes,
             _ignore_size,
+            _NEVER_CANCEL,
         )
 
     assert result is not None
@@ -79,6 +85,7 @@ def test_download_http_calls_on_size_known_from_content_length(tmp_path):
             "ds",
             _ignore_bytes,
             sizes_reported.append,
+            _NEVER_CANCEL,
         )
 
     assert sizes_reported == [1024]
@@ -101,6 +108,7 @@ def test_download_http_skips_on_size_known_without_content_length(tmp_path):
             "ds",
             _ignore_bytes,
             sizes_reported.append,
+            _NEVER_CANCEL,
         )
 
     assert sizes_reported == []
@@ -114,6 +122,7 @@ def test_download_http_records_failure_for_unresolvable_url(tmp_path):
         "my-ds",
         _ignore_bytes,
         _ignore_size,
+        _NEVER_CANCEL,
     )
 
     assert result is not None
