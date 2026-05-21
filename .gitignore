@@ -48,3 +48,6 @@ htmlcov/
 
 # Claude Code (local, not shared)
 .claude/settings.local.json
+
+# Generated at build time by ci/generate_build_config.py
+src/biohub_data_cli/_build_config.py
