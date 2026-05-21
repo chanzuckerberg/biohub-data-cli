@@ -1,3 +1,4 @@
+import threading
 from unittest.mock import MagicMock, patch
 
 from biohub_data_cli.utils.http import download_http, http_url_to_local_path
@@ -120,3 +121,32 @@ def test_download_http_records_failure_for_unresolvable_url(tmp_path):
     assert result.dataset_slug == "my-ds"
     assert result.url == "https://example.com/"
     assert "filename" in result.reason
+
+
+def test_download_http_cancels_mid_stream_and_cleans_part_file(tmp_path):
+    """When the cancel event is set, the worker exits at the next chunk and
+    unlinks the .part file — no half-written file left at the final path."""
+    cancel = threading.Event()
+    cancel.set()  # already cancelled before the first chunk
+
+    mock_response = MagicMock()
+    mock_response.headers = {"Content-Length": "8"}
+    mock_response.iter_content.return_value = [b"abcd", b"efgh"]
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("biohub_data_cli.utils.http.requests.get", return_value=mock_response):
+        result = download_http(
+            "https://example.com/file.h5ad",
+            tmp_path,
+            "coll",
+            "ds",
+            _ignore_bytes,
+            _ignore_size,
+            cancel,
+        )
+
+    assert result is not None
+    assert "cancelled" in result.reason
+    assert not (tmp_path / "file.h5ad").exists()
+    assert not (tmp_path / "file.h5ad.part").exists()

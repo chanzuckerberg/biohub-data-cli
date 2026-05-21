@@ -20,6 +20,15 @@ from biohub_data_cli.models import DownloadFailure
 console = Console()
 
 
+class DownloadCancelled(OSError):
+    """Raised inside a worker when the shared cancel event fires.
+
+    Subclasses OSError so the existing `except (RequestException, OSError)`
+    handler in download_http / `except OSError` in download_s3_object catches
+    it and unlinks the .part file — no separate cleanup path needed.
+    """
+
+
 def safe_join(root: Path, *parts: str) -> Path:
     """Join parts under root, rejecting paths that escape via '..' or absolute components."""
     root = root.resolve()

@@ -1,3 +1,4 @@
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -400,6 +401,26 @@ def test_download_collections_shuts_down_on_keyboard_interrupt(tmp_path):
     # with-block's default shutdown(wait=True, cancel_futures=False).
     cancel_calls = [c for c in shutdown_calls if c == (False, True)]
     assert len(cancel_calls) == 2
+
+
+def test_download_collections_passes_cancel_event_to_workers(tmp_path):
+    """Workers receive the shared threading.Event so they can bail out mid-chunk."""
+    received_cancels = []
+
+    def capture(*args, **kwargs):
+        # cancel is the last positional arg passed to download_http (7th)
+        received_cancels.append(args[-1])
+        return None
+
+    with (
+        patch("biohub_data_cli.download.download_http", side_effect=capture),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
+    ):
+        download_collections([MOCK_COLLECTION], Path(tmp_path))
+
+    assert len(received_cancels) == 1
+    assert isinstance(received_cancels[0], threading.Event)
+    assert not received_cancels[0].is_set()
 
 
 # ── progress wiring ─────────────────────────────────────────────────────────

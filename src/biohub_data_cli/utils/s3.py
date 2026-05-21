@@ -1,4 +1,5 @@
 import functools
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
@@ -10,7 +11,7 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
 from biohub_data_cli.models import DownloadFailure
-from biohub_data_cli.utils.cli import safe_join
+from biohub_data_cli.utils.cli import DownloadCancelled, safe_join
 
 _S3_MULTIPART_SIZE = 16 * 1024 * 1024  # 16 MB
 _S3_MAX_CONCURRENCY = 8
@@ -131,6 +132,7 @@ def download_s3_object(
     collection_slug: str,
     dataset_slug: str,
     on_bytes_downloaded: Callable[[int], None],
+    cancel: threading.Event | None = None,
 ) -> DownloadFailure | None:
     """Download a single S3 object into outdir, preserving the full S3 key structure.
 
@@ -146,15 +148,19 @@ def download_s3_object(
     # Stream to a .part file and atomically rename on success so an interrupted
     # download never leaves a truncated file at outpath that looks complete.
     tmp = outpath.with_name(outpath.name + ".part")
+
+    def callback(n: int) -> None:
+        if cancel is not None and cancel.is_set():
+            raise DownloadCancelled("cancelled")
+        on_bytes_downloaded(n)
+
     try:
         cfg = TransferConfig(
             multipart_threshold=_S3_MULTIPART_SIZE,
             multipart_chunksize=_S3_MULTIPART_SIZE,
             max_concurrency=_S3_MAX_CONCURRENCY,
         )
-        S3Transfer(s3, cfg).download_file(
-            bucket, key, str(tmp), callback=on_bytes_downloaded
-        )
+        S3Transfer(s3, cfg).download_file(bucket, key, str(tmp), callback=callback)
         tmp.replace(outpath)
         return None
     except (BotoCoreError, ClientError, OSError) as e:
