@@ -68,25 +68,24 @@ def _resolve_cli_version() -> str:
 
 
 def _init() -> None:
-    """Lazily initialize on first track(). ``_init_done`` is set on success or
-    opt-out so the env var isn't re-read on every event. On failure we leave
-    it unset so a subsequent track() can retry (transient disk/network issues
-    may have resolved)."""
+    """Lazily initialize on first track(). One-shot: ``_init_done`` is set
+    regardless of outcome (success, opt-out, or failure) so we don't re-read
+    the env var or re-attempt disk I/O on every event for the rest of the
+    process's lifetime."""
     global _client, _device_id, _cli_version, _init_done
     if _init_done:
         return
+    _init_done = True
     if (
         os.environ.get("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", "").strip().lower()
         == "true"
     ):
-        _init_done = True
         return
     try:
         _device_id = _load_or_create_device_id()
         _cli_version = _resolve_cli_version()
         _client = Amplitude(_resolve_api_key())
         atexit.register(_client.shutdown)
-        _init_done = True
     except Exception as e:
         # Disk I/O for device_id, Amplitude SDK construction, or atexit
         # registration can fail. Analytics must never break the CLI, so swallow

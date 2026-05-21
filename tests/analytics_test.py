@@ -46,19 +46,21 @@ def test_init_noop_when_client_already_set(monkeypatch):
     assert fake_amplitude.call_count == 1
 
 
-def test_init_retries_after_failure(monkeypatch):
-    """Transient failures (disk hiccup, etc.) should not permanently disable
-    analytics — only opt-out is one-shot."""
+def test_init_does_not_retry_after_failure(monkeypatch):
+    """Init is one-shot: once it has failed, subsequent track() calls must
+    not re-attempt disk I/O or SDK construction for the rest of the process."""
     monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
     failing = MagicMock(side_effect=RuntimeError("boom"))
     monkeypatch.setattr(analytics, "Amplitude", failing)
     analytics._init()
     assert analytics._client is None
+    assert failing.call_count == 1
 
     succeeding = MagicMock()
     monkeypatch.setattr(analytics, "Amplitude", succeeding)
     analytics._init()
-    assert analytics._client is succeeding.return_value
+    assert analytics._client is None
+    succeeding.assert_not_called()
 
 
 @pytest.mark.parametrize("value", ["true", "True", "TRUE", "  true  "])
@@ -83,8 +85,8 @@ def test_init_proceeds_when_opt_out_env_not_true(monkeypatch, value):
 
 def test_init_does_not_recheck_opt_out_env(monkeypatch):
     """Opt-out is one-shot: once we've seen DISABLE=true and bailed, a later
-    track() should not re-read the env var (the reviewer's concern from PR
-    #10) — even if it's been unset in between."""
+    track() should not re-read the env var, even if it's been unset in
+    between."""
     monkeypatch.setenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", "true")
     monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
     fake_amplitude = MagicMock()
