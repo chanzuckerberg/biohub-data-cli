@@ -15,13 +15,16 @@ def reset_analytics_state(tmp_path, monkeypatch):
     analytics._client = None
     analytics._device_id = None
     analytics._cli_version = None
+    analytics._init_done = False
     monkeypatch.setattr(analytics, "user_config_dir", lambda _name: str(tmp_path))
     monkeypatch.delenv("BIOHUB_CLI_ENV", raising=False)
+    monkeypatch.delenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", raising=False)
     monkeypatch.setattr(analytics, "Amplitude", MagicMock())
     yield
     analytics._client = None
     analytics._device_id = None
     analytics._cli_version = None
+    analytics._init_done = False
 
 
 # ── init / device_id ─────────────────────────────────────────────────────────
@@ -48,17 +51,21 @@ def test_init_noop_when_client_already_set(monkeypatch):
     assert fake_amplitude.call_count == 1
 
 
-def test_init_retries_after_failure(monkeypatch):
+def test_init_does_not_retry_after_failure(monkeypatch):
+    """Init is one-shot: once it has failed, subsequent track() calls must
+    not re-attempt disk I/O or SDK construction for the rest of the process."""
     monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
     failing = MagicMock(side_effect=RuntimeError("boom"))
     monkeypatch.setattr(analytics, "Amplitude", failing)
     analytics._init()
     assert analytics._client is None
+    assert failing.call_count == 1
 
     succeeding = MagicMock()
     monkeypatch.setattr(analytics, "Amplitude", succeeding)
     analytics._init()
-    assert analytics._client is succeeding.return_value
+    assert analytics._client is None
+    succeeding.assert_not_called()
 
 
 @pytest.mark.parametrize("value", ["true", "True", "TRUE", "  true  "])
@@ -81,6 +88,24 @@ def test_init_proceeds_when_opt_out_env_not_true(monkeypatch, value):
     assert analytics._client is not None
 
 
+def test_init_does_not_recheck_opt_out_env(monkeypatch):
+    """Opt-out is one-shot: once we've seen DISABLE=true and bailed, a later
+    track() should not re-read the env var, even if it's been unset in
+    between."""
+    monkeypatch.setenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", "true")
+    monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
+    fake_amplitude = MagicMock()
+    monkeypatch.setattr(analytics, "Amplitude", fake_amplitude)
+
+    analytics._init()
+    assert analytics._client is None
+
+    monkeypatch.delenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS")
+    analytics._init()
+    assert analytics._client is None
+    fake_amplitude.assert_not_called()
+
+
 def test_init_swallows_exceptions(monkeypatch):
     monkeypatch.setattr(analytics, "_PROD_KEY", "fake-key")
     monkeypatch.setattr(
@@ -97,8 +122,10 @@ def test_device_id_persists_across_init_calls(monkeypatch, tmp_path):
     analytics._init()
     first_id = analytics._device_id
 
+    # Simulate a second process: reset _init_done so _init() actually runs.
     analytics._client = None
     analytics._device_id = None
+    analytics._init_done = False
     analytics._init()
     second_id = analytics._device_id
 
