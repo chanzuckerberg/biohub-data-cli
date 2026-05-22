@@ -1,5 +1,6 @@
 import functools
 import os
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -9,7 +10,11 @@ from rich.markup import escape
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
 from biohub_data_cli.utils.cli import DownloadDisplay, console
 from biohub_data_cli.utils.http import download_http
-from biohub_data_cli.utils.s3 import download_s3_object, resolve_s3_uris
+from biohub_data_cli.utils.s3 import (
+    S3_MAX_WORKERS,
+    download_s3_object,
+    resolve_s3_uris,
+)
 from biohub_data_cli.utils.stats import (
     aggregate_dry_run_stats,
     estimate_size_summary,
@@ -18,7 +23,6 @@ from biohub_data_cli.utils.stats import (
 )
 
 _HTTP_MAX_WORKERS = 10
-_S3_MAX_WORKERS = 10
 
 _FIXTURES_DIR_ENV = "DATA_CLI_FIXTURES_DIR"
 
@@ -49,6 +53,7 @@ def submit_dataset_downloads(
     http_pool: ThreadPoolExecutor,
     s3_pool: ThreadPoolExecutor,
     display: DownloadDisplay,
+    cancel: threading.Event,
 ) -> tuple[list[Future], list[DownloadFailure]]:
     """Submit one dataset's downloads to the shared pools.
 
@@ -117,6 +122,7 @@ def submit_dataset_downloads(
             collection_slug,
             dataset.slug,
             on_bytes_downloaded,
+            cancel,
         )
         for obj_uri, _ in s3_objects
     ] + [
@@ -128,6 +134,7 @@ def submit_dataset_downloads(
             dataset.slug,
             on_bytes_downloaded,
             on_size_known,
+            cancel,
         )
         for url in http_urls
     ]
@@ -139,11 +146,16 @@ def download_collections(
 ) -> list[DownloadFailure]:
     """Download all datasets across all collections via shared HTTP and S3 pools."""
     all_futures: list[Future] = []
+    # Shared cancellation signal. Workers check it between chunks and bail out,
+    # cleaning up their .part file, so that all workers exit within one chunk
+    # instead of hanging.
+    cancel = threading.Event()
+    kbi: KeyboardInterrupt | None = None
 
     with (
         DownloadDisplay() as display,
         ThreadPoolExecutor(max_workers=_HTTP_MAX_WORKERS) as http_pool,
-        ThreadPoolExecutor(max_workers=_S3_MAX_WORKERS) as s3_pool,
+        ThreadPoolExecutor(max_workers=S3_MAX_WORKERS) as s3_pool,
     ):
         for collection in collections:
             for dataset in collection.datasets:
@@ -155,6 +167,7 @@ def download_collections(
                     http_pool,
                     s3_pool,
                     display,
+                    cancel,
                 )
                 for f in submission_failures:
                     display.record_failure(f)
@@ -165,10 +178,18 @@ def download_collections(
                 result = future.result()
                 if result is not None:
                     display.record_failure(result)
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as e:
+            # Defer the user-facing message until after the with-block exits
+            # so it lands below the (now-frozen) progress bars rather than
+            # being squeezed above the live region.
+            cancel.set()
             http_pool.shutdown(wait=False, cancel_futures=True)
             s3_pool.shutdown(wait=False, cancel_futures=True)
-            raise
+            kbi = e
+
+    if kbi is not None:
+        console.print("\n[yellow]cancelled — partial files cleaned up[/yellow]")
+        raise kbi
 
     return display.failures
 
@@ -226,7 +247,15 @@ def download_collection_command(
             abort=True,
         )
 
-    failures = download_collections(collections, outdir)
+    try:
+        failures = download_collections(collections, outdir)
+    except KeyboardInterrupt:
+        # download_collections already drained workers (its `with` blocks
+        # waited for shutdown) and printed the cancellation line. os._exit
+        # skips interpreter finalizers — abandoned sockets in S3Transfer's
+        # internal thread pool would otherwise produce noisy "Exception
+        # ignored while finalizing file <HTTPResponse>" tracebacks.
+        os._exit(130)
 
     if failures:
         raise click.ClickException(f"{len(failures)} download(s) failed.")

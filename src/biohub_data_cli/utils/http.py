@@ -1,10 +1,11 @@
+import threading
 import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 
 import requests
 from biohub_data_cli.models import DownloadFailure
-from biohub_data_cli.utils.cli import safe_join
+from biohub_data_cli.utils.cli import DownloadCancelled, safe_join
 
 _HTTP_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
@@ -36,6 +37,7 @@ def download_http(
     dataset_slug: str,
     on_bytes_downloaded: Callable[[int], None],
     on_size_known: Callable[[int], None],
+    cancel: threading.Event,
 ) -> DownloadFailure | None:
     """Download `url` to `outdir/<filename>`.
 
@@ -70,6 +72,8 @@ def download_http(
                     pass  # malformed header — fall through, just no total update
             with open(tmp, "wb") as f:
                 for chunk in r.iter_content(chunk_size=_HTTP_CHUNK_SIZE):
+                    if cancel.is_set():
+                        raise DownloadCancelled("cancelled")
                     if chunk:
                         f.write(chunk)
                         on_bytes_downloaded(len(chunk))

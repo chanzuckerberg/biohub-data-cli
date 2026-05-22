@@ -1,3 +1,5 @@
+import inspect
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -12,8 +14,12 @@ from biohub_data_cli.download import (
     submit_dataset_downloads,
 )
 from biohub_data_cli.utils.cli import DownloadDisplay
+from biohub_data_cli.utils.http import download_http
 from biohub_data_cli.main import cli
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
+
+# Never-set event for tests that don't exercise the cancel path.
+_NEVER_CANCEL = threading.Event()
 
 MOCK_COLLECTION = Collection.model_validate(
     {
@@ -173,7 +179,13 @@ def test_submit_dataset_downloads_routes_and_collects_submission_failures(tmp_pa
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
             futures, submission_failures = submit_dataset_downloads(
-                "coll", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
+                "coll",
+                dataset,
+                Path(tmp_path),
+                http_ex,
+                s3_ex,
+                DownloadDisplay(),
+                _NEVER_CANCEL,
             )
             for f in futures:
                 f.result()
@@ -200,7 +212,13 @@ def test_submit_dataset_downloads_unknown_scheme(tmp_path):
         ThreadPoolExecutor(max_workers=1) as s3_ex,
     ):
         futures, submission_failures = submit_dataset_downloads(
-            "coll", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
+            "coll",
+            dataset,
+            Path(tmp_path),
+            http_ex,
+            s3_ex,
+            DownloadDisplay(),
+            _NEVER_CANCEL,
         )
 
     assert futures == []
@@ -238,7 +256,13 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
             futures, submission_failures = submit_dataset_downloads(
-                "coll-x", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
+                "coll-x",
+                dataset,
+                Path(tmp_path),
+                http_ex,
+                s3_ex,
+                DownloadDisplay(),
+                _NEVER_CANCEL,
             )
             for f in futures:
                 f.result()
@@ -270,7 +294,13 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path
             ThreadPoolExecutor(max_workers=1) as s3_ex,
         ):
             futures, submission_failures = submit_dataset_downloads(
-                "coll-x", dataset, Path(tmp_path), http_ex, s3_ex, DownloadDisplay()
+                "coll-x",
+                dataset,
+                Path(tmp_path),
+                http_ex,
+                s3_ex,
+                DownloadDisplay(),
+                _NEVER_CANCEL,
             )
 
     assert futures == []
@@ -402,6 +432,27 @@ def test_download_collections_shuts_down_on_keyboard_interrupt(tmp_path):
     assert len(cancel_calls) == 2
 
 
+def test_download_collections_passes_cancel_event_to_workers(tmp_path):
+    """Workers receive the shared threading.Event so they can bail out mid-chunk."""
+    received_cancels = []
+    signature = inspect.signature(download_http)
+
+    def capture(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        received_cancels.append(bound.arguments["cancel"])
+        return None
+
+    with (
+        patch("biohub_data_cli.download.download_http", side_effect=capture),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
+    ):
+        download_collections([MOCK_COLLECTION], Path(tmp_path))
+
+    assert len(received_cancels) == 1
+    assert isinstance(received_cancels[0], threading.Event)
+    assert not received_cancels[0].is_set()
+
+
 # ── progress wiring ─────────────────────────────────────────────────────────
 
 
@@ -432,7 +483,7 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
             futures, _ = submit_dataset_downloads(
-                "coll", dataset, Path(tmp_path), http_ex, s3_ex, display
+                "coll", dataset, Path(tmp_path), http_ex, s3_ex, display, _NEVER_CANCEL
             )
             for f in futures:
                 f.result()
@@ -468,7 +519,7 @@ def test_submit_dataset_downloads_no_progress_task_when_only_submission_failures
         ThreadPoolExecutor(max_workers=1) as s3_ex,
     ):
         futures, submission_failures = submit_dataset_downloads(
-            "coll", dataset, Path(tmp_path), http_ex, s3_ex, display
+            "coll", dataset, Path(tmp_path), http_ex, s3_ex, display, _NEVER_CANCEL
         )
 
     assert futures == []

@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from typing import NamedTuple
 from unittest.mock import ANY, MagicMock, patch
@@ -14,6 +15,10 @@ from biohub_data_cli.utils.s3 import (
 
 
 def _ignore_bytes(_: int) -> None: ...
+
+
+# Never-set event for tests that don't exercise the cancel path.
+_NEVER_CANCEL = threading.Event()
 
 
 # Every mocked S3 object in this test file reports this fake size; expected
@@ -238,7 +243,12 @@ def test_download_s3_object_success(tmp_path):
     ):
         mock_transfer.return_value.download_file.side_effect = fake_download
         result = download_s3_object(
-            "s3://bucket/prefix/file.h5ad", tmp_path, "coll", "ds", _ignore_bytes
+            "s3://bucket/prefix/file.h5ad",
+            tmp_path,
+            "coll",
+            "ds",
+            _ignore_bytes,
+            _NEVER_CANCEL,
         )
     assert result is None
     assert (tmp_path / "prefix" / "file.h5ad").exists()
@@ -259,12 +269,45 @@ def test_download_s3_object_records_failure(tmp_path):
             "my-coll",
             "my-ds",
             _ignore_bytes,
+            _NEVER_CANCEL,
         )
     assert result is not None
     assert "file.h5ad" in result.url
     assert result.collection_slug == "my-coll"
     assert result.dataset_slug == "my-ds"
     assert "Access denied" in result.reason
+
+
+def test_download_s3_object_cancels_via_progress_callback_and_cleans_part_file(
+    tmp_path,
+):
+    """When the cancel event is set, the per-chunk callback raises, S3Transfer
+    propagates it, the existing handler unlinks the .part file."""
+    cancel = threading.Event()
+    cancel.set()
+
+    def fake_download(bucket, key, dest, callback):
+        Path(dest).write_bytes(b"partial")  # simulate mid-stream write
+        callback(7)  # this should raise because cancel is set
+
+    with (
+        patch("biohub_data_cli.utils.s3._make_s3_client", return_value=MagicMock()),
+        patch("biohub_data_cli.utils.s3.S3Transfer") as mock_transfer,
+    ):
+        mock_transfer.return_value.download_file.side_effect = fake_download
+        result = download_s3_object(
+            "s3://bucket/prefix/file.h5ad",
+            tmp_path,
+            "coll",
+            "ds",
+            _ignore_bytes,
+            cancel,
+        )
+
+    assert result is not None
+    assert "cancelled" in result.reason
+    assert not (tmp_path / "prefix" / "file.h5ad").exists()
+    assert not (tmp_path / "prefix" / "file.h5ad.part").exists()
 
 
 # ── resolve_s3_uris ─────────────────────────────────────────────────────────
