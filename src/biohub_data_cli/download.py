@@ -103,8 +103,10 @@ def submit_dataset_downloads(
 
     # Seed total with what we already know: S3 sizes are exact and free.
     # HTTP totals get added as workers learn Content-Length (see on_size_known).
-    # If no initial total, fall back to the curator-provided file_size_bytes.
-    initial_total = sum(size for _, size in s3_objects) or dataset.file_size_bytes
+    # Don't fall back to dataset.file_size_bytes — grow_task_total adds, so
+    # mixing a BE estimate with per-worker Content-Length growth double-counts.
+    # HTTP-only datasets just start indeterminate until the first header lands.
+    initial_total = sum(size for _, size in s3_objects)
     task_id = display.progress.add_task(
         escape(f"{collection_slug}/{dataset.slug}"),
         total=initial_total or None,

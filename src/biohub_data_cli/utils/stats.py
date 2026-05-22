@@ -10,13 +10,19 @@ from biohub_data_cli.utils.s3 import resolve_s3_uris
 def get_collections_stats(
     collections: list[Collection],
 ) -> list[tuple[Collection, list[DatasetStats]]]:
-    """Resolve every dataset's S3 URIs and return per-dataset aggregates
-    paired with their collection. Order follows the input; duplicate
-    collections appear as separate entries.
+    """Resolve every dataset's size and return per-dataset aggregates paired
+    with their collection. Order follows the input; duplicate collections
+    appear as separate entries.
 
-    Dry-run stats do not support HTTP URLs at the moment. They are counted per
-    dataset and surfaced as a warning in the summary (see `print_dry_run_summary`),
-    but not sized, since we don't expect HTTP URLs in OPS data.
+    Sizing strategy per dataset:
+    1. If the backend provided `Dataset.file_size_bytes`, use it as-is. The BE
+       size is assumed to cover every URL (S3 + HTTP), so no listing happens
+       and HTTP URLs are not flagged as skipped.
+    2. Otherwise, fall back to listing each `s3://` URI via `resolve_s3_uris`.
+       HTTP URLs are not sized on this path and are counted toward
+       `n_http_urls_skipped` so the summary can warn the total is partial.
+
+    Preferring the BE size avoids the S3 listing for large collections, which can be slow.
     """
     result: list[tuple[Collection, list[DatasetStats]]] = []
     total_datasets = sum(len(c.datasets) for c in collections)
@@ -30,6 +36,18 @@ def get_collections_stats(
                     f"Resolving collections stats… ({done}/{total_datasets}) "
                     f"{collection.slug}/{dataset.slug}"
                 )
+                if dataset.file_size_bytes is not None:
+                    rows.append(
+                        DatasetStats(
+                            collection_slug=collection.slug,
+                            dataset_slug=dataset.slug,
+                            total_bytes=dataset.file_size_bytes,
+                            n_failed_uris=0,
+                            n_http_urls_skipped=0,
+                        )
+                    )
+                    continue
+
                 s3_uris = [u for u in dataset.urls if u.startswith("s3://")]
                 n_http = sum(
                     1 for u in dataset.urls if u.startswith(("http://", "https://"))
