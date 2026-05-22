@@ -13,6 +13,8 @@ from biohub_data_cli.utils.http import download_http
 from biohub_data_cli.utils.s3 import (
     S3_MAX_WORKERS,
     download_s3_object,
+    mark_phase,
+    print_s3_debug_summary_if_enabled,
     resolve_s3_uris,
 )
 from biohub_data_cli.utils.stats import (
@@ -173,16 +175,25 @@ def download_collections(
                     display.record_failure(f)
                 all_futures.extend(futs)
 
+        # All listings done; per-object downloads dominate from here. Attribution
+        # is fuzzy if datasets interleave (later datasets' listings would land in
+        # "download" phase) but accurate for single-dataset runs.
+        mark_phase("download")
+
         try:
             for future in as_completed(all_futures):
                 result = future.result()
                 if result is not None:
                     display.record_failure(result)
         except KeyboardInterrupt as e:
-            # Defer the user-facing message until after the with-block exits
-            # so it lands below the (now-frozen) progress bars rather than
-            # being squeezed above the live region.
             cancel.set()
+            # Rich Live with transient=False lets console.print insert above
+            # the still-active progress bars, so the user gets immediate
+            # feedback while in-flight workers drain (which can take several
+            # seconds before the with-block can exit).
+            console.print(
+                "\n[yellow]cancelling — waiting for in-flight downloads to drain…[/yellow]"
+            )
             http_pool.shutdown(wait=False, cancel_futures=True)
             s3_pool.shutdown(wait=False, cancel_futures=True)
             kbi = e
@@ -254,7 +265,9 @@ def download_collection_command(
         # waited for shutdown) and printed the cancellation line. os._exit
         # skips interpreter finalizers — abandoned sockets in S3Transfer's
         # internal thread pool would otherwise produce noisy "Exception
-        # ignored while finalizing file <HTTPResponse>" tracebacks.
+        # ignored while finalizing file <HTTPResponse>" tracebacks. atexit
+        # is also skipped, so force the debug summary out beforehand.
+        print_s3_debug_summary_if_enabled()
         os._exit(130)
 
     if failures:
