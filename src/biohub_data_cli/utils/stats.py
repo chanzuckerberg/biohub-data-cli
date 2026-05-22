@@ -129,7 +129,7 @@ def print_dry_run_summary(
     console.print(
         f"Total: {aggregate.n_collections} collection(s), "
         f"{aggregate.n_datasets} dataset(s), "
-        f"{format_bytes(aggregate.total_bytes)}"
+        f"~{format_bytes(aggregate.total_bytes)} estimated"
     )
 
     total_warnings: list[str] = []

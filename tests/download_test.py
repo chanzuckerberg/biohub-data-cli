@@ -500,14 +500,7 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
 
 
 def test_submit_dataset_downloads_http_only_ignores_be_file_size_bytes(tmp_path):
-    """HTTP-only dataset with `file_size_bytes` set must NOT seed the bar from it.
-
-    Regression: the bar previously seeded `initial_total = file_size_bytes` and
-    then each HTTP worker called `on_size_known(Content-Length)` which adds —
-    so the final total was `file_size_bytes + sum(Content-Lengths)`, double-
-    counted. After the fix, HTTP-only bars start indeterminate (total=None)
-    and grow only from per-worker Content-Length reports.
-    """
+    """HTTP-only dataset with `file_size_bytes` set must NOT seed the bar from it."""
     dataset = Dataset.model_validate(
         {
             "id": "ds-1",
