@@ -83,7 +83,7 @@ jobs:
 
   # Catches syntax / import / dep-resolution issues across the Python versions
   # we claim to support (`requires-python = ">=3.10"` in pyproject.toml).
-  # Uses pip — not uv — to exercise the install path real users follow.
+  # Uses pip: the reference PyPI installer.
   python-version-compatibility:
     name: install (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
