@@ -46,7 +46,7 @@ jobs:
   # from the default `pytest` invocation (see `addopts = "-m 'not integration'"`
   # in pyproject.toml). Run them on the tagged commit before publishing so a
   # regression in the live-network path blocks the release rather than
-  # reaching users. 
+  # reaching users.
   integration-test:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
