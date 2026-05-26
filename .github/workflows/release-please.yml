@@ -70,6 +70,11 @@ jobs:
       - name: Run tests on the tagged commit
         run: uv run pytest tests/
 
+      - name: Generate build config
+        env:
+          OPS_SERVICE_URL: ${{ vars.OPS_SERVICE_URL }}
+        run: uv run python ci/generate_build_config.py
+
       - name: Build package
         run: uv run --with build python -m build
 
