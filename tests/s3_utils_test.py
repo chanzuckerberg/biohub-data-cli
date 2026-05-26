@@ -310,13 +310,37 @@ def test_download_s3_object_cancels_via_progress_callback_and_cleans_part_file(
     assert not (tmp_path / "prefix" / "file.h5ad.part").exists()
 
 
+def test_expand_s3_location_reports_listing_progress_per_page():
+    """on_listing_progress fires once per LIST page with cumulative counts.
+
+    Directory markers (keys ending in '/') don't count toward objects or bytes.
+    """
+    s3 = MagicMock()
+    paginator = MagicMock()
+    paginator.paginate.return_value = [
+        {"Contents": [{"Key": "p/a", "Size": 100}, {"Key": "p/b", "Size": 200}]},
+        {"Contents": [{"Key": "p/c/", "Size": 0}, {"Key": "p/d", "Size": 50}]},
+    ]
+    s3.get_paginator.return_value = paginator
+
+    progress: list[tuple[int, int]] = []
+    with patch("biohub_data_cli.utils.s3._make_s3_client", return_value=s3):
+        expand_s3_location(
+            "s3://bucket/p",
+            on_listing_progress=lambda n, b: progress.append((n, b)),
+        )
+
+    # One callback per page, cumulative.
+    assert progress == [(2, 300), (3, 350)]
+
+
 # ── resolve_s3_uris ─────────────────────────────────────────────────────────
 
 
 def test_resolve_s3_uris_returns_expanded_objects_and_no_failures():
     with patch(
         "biohub_data_cli.utils.s3.expand_s3_location",
-        side_effect=lambda uri: [(f"{uri}/a", 100), (f"{uri}/b", 200)],
+        side_effect=lambda uri, **_kw: [(f"{uri}/a", 100), (f"{uri}/b", 200)],
     ):
         objects, failures = resolve_s3_uris("coll", "ds", ["s3://b/x", "s3://b/y"])
 
@@ -332,7 +356,7 @@ def test_resolve_s3_uris_returns_expanded_objects_and_no_failures():
 def test_resolve_s3_uris_attributes_listing_failures_and_continues():
     """A failing URI becomes a DownloadFailure; remaining URIs still resolve."""
 
-    def expand(uri):
+    def expand(uri, **_kw):
         if uri == "s3://b/bad":
             raise RuntimeError("listing failed: access denied")
         return [(f"{uri}/file", 50)]

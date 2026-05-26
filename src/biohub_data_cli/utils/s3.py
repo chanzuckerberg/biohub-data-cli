@@ -221,8 +221,14 @@ def s3_url_to_local_path(uri: str, outdir: Path) -> Path:
     return safe_join(outdir, *key.split("/"))
 
 
-def expand_s3_location(uri: str) -> list[tuple[str, int]]:
+def expand_s3_location(
+    uri: str,
+    on_listing_progress: Callable[[int, int], None] | None = None,
+) -> list[tuple[str, int]]:
     """Expand a URI into a list of (object URI, size in bytes) tuples.
+
+    Visible for testing — only `resolve_s3_uris` in this module should call
+    this directly; everywhere else goes through that wrapper.
 
     Resolution rule — folder wins:
     1. List under `<key>/`. If anything is there, return all of those objects;
@@ -240,6 +246,10 @@ def expand_s3_location(uri: str) -> list[tuple[str, int]]:
        and dir/dir2/f1 exists as another object (i.e. pathological S3 layout),
        both will be returned and the cli will throw when writing to the filesystem.
 
+    `on_listing_progress(n_objects, total_bytes)` fires after every paginated
+    LIST page with running cumulative totals — used by the CLI to render a
+    live counter during slow walks of huge prefixes (e.g. aconcagua zarr).
+
     Raises RuntimeError on S3 access errors or when the URI resolves to nothing.
     """
     s3 = _make_s3_client()
@@ -251,6 +261,8 @@ def expand_s3_location(uri: str) -> list[tuple[str, int]]:
     list_prefix = key.rstrip("/") + "/" if key else ""
     raw_keys_and_size: list[tuple[str, int]] = []
     paginator = s3.get_paginator("list_objects_v2")
+    n_objects = 0
+    total_bytes = 0
     try:
         for page in paginator.paginate(Bucket=bucket, Prefix=list_prefix):
             for obj in page.get("Contents", []):
@@ -258,6 +270,10 @@ def expand_s3_location(uri: str) -> list[tuple[str, int]]:
                     raw_keys_and_size.append(
                         (f"s3://{bucket}/{obj['Key']}", obj["Size"])
                     )
+                    n_objects += 1
+                    total_bytes += obj["Size"]
+            if on_listing_progress is not None:
+                on_listing_progress(n_objects, total_bytes)
     except (BotoCoreError, ClientError) as e:
         raise RuntimeError(f"Failed to list S3 objects at {uri}: {e}") from e
 
@@ -284,18 +300,24 @@ def resolve_s3_uris(
     collection_slug: str,
     dataset_slug: str,
     s3_uris: list[str],
+    on_listing_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[tuple[str, int]], list[DownloadFailure]]:
     """Expand s3 uris of a dataset to (object_uri, size). Listing failures get
     attributed to the originating URI and returned alongside the resolved
     objects so callers can continue with the rest.
 
-    TODO(AIP-297): scalability - make this concurrent
+    `on_listing_progress` is forwarded as-is to each `expand_s3_location`
+    call. For datasets with multiple S3 URIs, the counter resets between URIs
+    rather than accumulating — OPS datasets have a single S3 path per dataset,
+    so this issue won't be surfaced to users in practice. TODO(AIP-297): revisit this.
     """
     s3_objects: list[tuple[str, int]] = []
     failures: list[DownloadFailure] = []
     for uri in s3_uris:
         try:
-            s3_objects.extend(expand_s3_location(uri))
+            s3_objects.extend(
+                expand_s3_location(uri, on_listing_progress=on_listing_progress)
+            )
         except RuntimeError as e:
             failures.append(
                 DownloadFailure(
