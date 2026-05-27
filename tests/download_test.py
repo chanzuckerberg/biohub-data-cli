@@ -499,6 +499,43 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
     assert len(advances) == 1
 
 
+def test_submit_dataset_downloads_http_only_ignores_be_file_size_bytes(tmp_path):
+    """HTTP-only dataset with `file_size_bytes` set must NOT seed the bar from it."""
+    dataset = Dataset.model_validate(
+        {
+            "id": "ds-1",
+            "slug": "http-only",
+            "title": "HTTP only",
+            "file_format": "parquet",
+            "file_size_bytes": 9999,
+            "urls": [
+                "https://example.com/a.parquet",
+                "https://example.com/b.parquet",
+            ],
+        }
+    )
+    display = DownloadDisplay()
+
+    def fake_http(url, outdir, coll, ds, on_bytes_downloaded, on_size_known, cancel):
+        on_size_known(100)
+        return None
+
+    with patch("biohub_data_cli.download.download_http", side_effect=fake_http):
+        with (
+            ThreadPoolExecutor(max_workers=2) as http_ex,
+            ThreadPoolExecutor(max_workers=2) as s3_ex,
+        ):
+            futures, _ = submit_dataset_downloads(
+                "coll", dataset, Path(tmp_path), http_ex, s3_ex, display, _NEVER_CANCEL
+            )
+            for f in futures:
+                f.result()
+
+    task = display.progress.tasks[0]
+    # Sum of the two Content-Length reports, NOT file_size_bytes + reports.
+    assert task.total == 200
+
+
 def test_submit_dataset_downloads_no_progress_task_when_only_submission_failures(
     tmp_path,
 ):
@@ -555,6 +592,24 @@ def test_dry_run_prints_summary_and_does_not_download(tmp_path):
 
 
 def test_dry_run_exits_nonzero_when_size_lookups_fail(tmp_path):
+    # Dataset without `file_size_bytes` so dry-run falls back to S3 listing,
+    # which is the only path that can produce a size-lookup failure.
+    collection_without_be_size = Collection.model_validate(
+        {
+            "id": "coll-1",
+            "slug": "test-collection",
+            "title": "Test Collection",
+            "datasets": [
+                {
+                    "id": "ds-1",
+                    "slug": "matrix-b",
+                    "title": "Matrix B",
+                    "file_format": "zarr_v3",
+                    "urls": ["s3://bucket/matrix-b/"],
+                },
+            ],
+        }
+    )
     with (
         patch("biohub_data_cli.download.fetch_collection") as mock_fetch,
         patch("biohub_data_cli.download.download_collections") as mock_dl,
@@ -563,7 +618,7 @@ def test_dry_run_exits_nonzero_when_size_lookups_fail(tmp_path):
             side_effect=RuntimeError("listing failed"),
         ),
     ):
-        mock_fetch.return_value = MOCK_COLLECTION
+        mock_fetch.return_value = collection_without_be_size
 
         result = CliRunner().invoke(
             cli, ["download", "collection", "coll-1", "-o", str(tmp_path), "--dry-run"]

@@ -136,6 +136,134 @@ def test_get_collections_stats_silently_skips_http_urls():
     assert rows[0].n_failed_uris == 0
 
 
+def test_get_collections_stats_prefers_be_size_over_listing():
+    """When `file_size_bytes` is set, use it directly and skip S3 listing."""
+    coll = Collection.model_validate(
+        {
+            "id": "c",
+            "slug": "coll",
+            "title": "C",
+            "datasets": [
+                {
+                    "id": "d1",
+                    "slug": "ds1",
+                    "title": "D1",
+                    "file_format": "zarr_v3",
+                    "file_size_bytes": 9999,
+                    "urls": ["s3://b/x/", "s3://b/y/"],
+                },
+            ],
+        }
+    )
+    with patch(
+        "biohub_data_cli.utils.s3.expand_s3_location",
+    ) as mock_expand:
+        stats = get_collections_stats([coll])
+
+    mock_expand.assert_not_called()
+    rows = stats[0][1]
+    assert rows[0].total_bytes == 9999
+    assert rows[0].n_failed_uris == 0
+    assert rows[0].n_http_urls_skipped == 0
+
+
+def test_get_collections_stats_be_size_zero_is_respected():
+    """`file_size_bytes == 0` is a valid BE answer and must not trigger listing."""
+    coll = Collection.model_validate(
+        {
+            "id": "c",
+            "slug": "coll",
+            "title": "C",
+            "datasets": [
+                {
+                    "id": "d1",
+                    "slug": "empty",
+                    "title": "E",
+                    "file_format": "parquet",
+                    "file_size_bytes": 0,
+                    "urls": ["s3://b/x"],
+                },
+            ],
+        }
+    )
+    with patch("biohub_data_cli.utils.s3.expand_s3_location") as mock_expand:
+        stats = get_collections_stats([coll])
+
+    mock_expand.assert_not_called()
+    rows = stats[0][1]
+    assert rows[0].total_bytes == 0
+    assert rows[0].n_failed_uris == 0
+
+
+def test_get_collections_stats_be_size_suppresses_http_skipped_warning():
+    """BE size is assumed to cover HTTP URLs too — don't flag them as skipped."""
+    coll = Collection.model_validate(
+        {
+            "id": "c",
+            "slug": "coll",
+            "title": "C",
+            "datasets": [
+                {
+                    "id": "d1",
+                    "slug": "mixed",
+                    "title": "Mixed",
+                    "file_format": "mixed",
+                    "file_size_bytes": 1234,
+                    "urls": [
+                        "https://example.com/a.parquet",
+                        "s3://b/x",
+                    ],
+                },
+            ],
+        }
+    )
+    with patch("biohub_data_cli.utils.s3.expand_s3_location") as mock_expand:
+        stats = get_collections_stats([coll])
+
+    mock_expand.assert_not_called()
+    rows = stats[0][1]
+    assert rows[0].total_bytes == 1234
+    assert rows[0].n_http_urls_skipped == 0
+
+
+def test_get_collections_stats_mixed_be_size_and_listing_fallback():
+    """Per-dataset decision: sized datasets skip listing, unsized ones list."""
+    coll = Collection.model_validate(
+        {
+            "id": "c",
+            "slug": "coll",
+            "title": "C",
+            "datasets": [
+                {
+                    "id": "d1",
+                    "slug": "be-sized",
+                    "title": "BE-sized",
+                    "file_format": "parquet",
+                    "file_size_bytes": 7000,
+                    "urls": ["s3://b/sized"],
+                },
+                {
+                    "id": "d2",
+                    "slug": "needs-listing",
+                    "title": "Needs listing",
+                    "file_format": "zarr_v3",
+                    "urls": ["s3://b/unsized"],
+                },
+            ],
+        }
+    )
+    with patch(
+        "biohub_data_cli.utils.s3.expand_s3_location",
+        return_value=[("s3://b/unsized/chunk", 250)],
+    ) as mock_expand:
+        stats = get_collections_stats([coll])
+
+    mock_expand.assert_called_once_with("s3://b/unsized")
+    rows = stats[0][1]
+    assert rows[0].total_bytes == 7000
+    assert rows[1].total_bytes == 250
+
+
 def test_get_collections_stats_counts_failed_uris_as_partial():
     coll = Collection.model_validate(
         {
