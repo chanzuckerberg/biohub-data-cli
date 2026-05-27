@@ -5,6 +5,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import click
+from rich.filesize import decimal as format_bytes
 from rich.markup import escape
 
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
@@ -95,9 +96,24 @@ def submit_dataset_downloads(
     # Expand S3 prefixes into (uri, size) pairs so we can both submit each
     # object as its own future and seed the progress task with the actual
     # byte total directly from list_objects_v2 / head_object.
+    #
+    # Pipe per-page progress to the display so the user sees the LIST walk
+    # advancing — without this, huge prefixes (millions of zarr chunks) show
+    # an empty Live region for minutes before any download bar appears.
+    label = f"{collection_slug}/{dataset.slug}"
+
+    def on_listing_progress(n_objects: int, total_bytes: int) -> None:
+        display.set_listing(
+            f"listing {label} · {n_objects:,} objects · {format_bytes(total_bytes)}"
+        )
+
     s3_objects, listing_failures = resolve_s3_uris(
-        collection_slug, dataset.slug, s3_uris
+        collection_slug,
+        dataset.slug,
+        s3_uris,
+        on_listing_progress=on_listing_progress,
     )
+    display.set_listing(None)
     submission_failures.extend(listing_failures)
 
     if not s3_objects and not http_urls:
