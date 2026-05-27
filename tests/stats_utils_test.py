@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from biohub_data_cli.models import Collection
 from biohub_data_cli.utils.stats import (
@@ -86,7 +86,7 @@ def test_get_collections_stats_aggregates_per_dataset():
     }
     with patch(
         "biohub_data_cli.utils.s3.expand_s3_location",
-        side_effect=lambda uri: expansions[uri],
+        side_effect=lambda uri, **_kw: expansions[uri],
     ):
         stats = get_collections_stats([coll])
 
@@ -130,7 +130,7 @@ def test_get_collections_stats_silently_skips_http_urls():
     ) as mock_expand:
         stats = get_collections_stats([coll])
 
-    mock_expand.assert_called_once_with("s3://b/x")
+    mock_expand.assert_called_once_with("s3://b/x", on_listing_progress=ANY)
     rows = stats[0][1]
     assert rows[0].total_bytes == 1024
     assert rows[0].n_failed_uris == 0
@@ -258,7 +258,7 @@ def test_get_collections_stats_mixed_be_size_and_listing_fallback():
     ) as mock_expand:
         stats = get_collections_stats([coll])
 
-    mock_expand.assert_called_once_with("s3://b/unsized")
+    mock_expand.assert_called_once_with("s3://b/unsized", on_listing_progress=None)
     rows = stats[0][1]
     assert rows[0].total_bytes == 7000
     assert rows[1].total_bytes == 250
@@ -282,7 +282,7 @@ def test_get_collections_stats_counts_failed_uris_as_partial():
         }
     )
 
-    def expand(uri):
+    def expand(uri, **_kw):
         if uri == "s3://b/bad":
             raise RuntimeError("listing failed")
         return [("s3://b/good/file", 500)]

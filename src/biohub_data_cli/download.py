@@ -5,6 +5,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import click
+from rich.filesize import decimal as format_bytes
 from rich.markup import escape
 
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
@@ -13,6 +14,8 @@ from biohub_data_cli.utils.http import download_http
 from biohub_data_cli.utils.s3 import (
     S3_MAX_WORKERS,
     download_s3_object,
+    mark_phase,
+    print_s3_debug_summary_if_enabled,
     resolve_s3_uris,
 )
 from biohub_data_cli.utils.stats import (
@@ -93,9 +96,24 @@ def submit_dataset_downloads(
     # Expand S3 prefixes into (uri, size) pairs so we can both submit each
     # object as its own future and seed the progress task with the actual
     # byte total directly from list_objects_v2 / head_object.
+    #
+    # Pipe per-page progress to the display so the user sees the LIST walk
+    # advancing — without this, huge prefixes (millions of zarr chunks) show
+    # an empty Live region for minutes before any download bar appears.
+    label = f"{collection_slug}/{dataset.slug}"
+
+    def on_listing_progress(n_objects: int, total_bytes: int) -> None:
+        display.set_listing(
+            f"listing {label} · {n_objects:,} objects · {format_bytes(total_bytes)}"
+        )
+
     s3_objects, listing_failures = resolve_s3_uris(
-        collection_slug, dataset.slug, s3_uris
+        collection_slug,
+        dataset.slug,
+        s3_uris,
+        on_listing_progress=on_listing_progress,
     )
+    display.set_listing(None)
     submission_failures.extend(listing_failures)
 
     if not s3_objects and not http_urls:
@@ -175,16 +193,25 @@ def download_collections(
                     display.record_failure(f)
                 all_futures.extend(futs)
 
+        # All listings done; per-object downloads dominate from here. Attribution
+        # is fuzzy if datasets interleave (later datasets' listings would land in
+        # "download" phase) but accurate for single-dataset runs.
+        mark_phase("download")
+
         try:
             for future in as_completed(all_futures):
                 result = future.result()
                 if result is not None:
                     display.record_failure(result)
         except KeyboardInterrupt as e:
-            # Defer the user-facing message until after the with-block exits
-            # so it lands below the (now-frozen) progress bars rather than
-            # being squeezed above the live region.
             cancel.set()
+            # Rich Live with transient=False lets console.print insert above
+            # the still-active progress bars, so the user gets immediate
+            # feedback while in-flight workers drain (which can take several
+            # seconds before the with-block can exit).
+            console.print(
+                "\n[yellow]cancelling — waiting for in-flight downloads to drain…[/yellow]"
+            )
             http_pool.shutdown(wait=False, cancel_futures=True)
             s3_pool.shutdown(wait=False, cancel_futures=True)
             kbi = e
@@ -256,7 +283,9 @@ def download_collection_command(
         # waited for shutdown) and printed the cancellation line. os._exit
         # skips interpreter finalizers — abandoned sockets in S3Transfer's
         # internal thread pool would otherwise produce noisy "Exception
-        # ignored while finalizing file <HTTPResponse>" tracebacks.
+        # ignored while finalizing file <HTTPResponse>" tracebacks. atexit
+        # is also skipped, so force the debug summary out beforehand.
+        print_s3_debug_summary_if_enabled()
         os._exit(130)
 
     if failures:

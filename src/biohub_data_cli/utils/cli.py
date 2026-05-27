@@ -2,7 +2,7 @@ import threading
 from pathlib import Path
 from types import TracebackType
 
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.markup import escape
 from rich.progress import (
@@ -13,6 +13,7 @@ from rich.progress import (
     TaskProgressColumn,
     TextColumn,
 )
+from rich.spinner import Spinner
 from rich.tree import Tree
 
 from biohub_data_cli.models import DownloadFailure
@@ -71,6 +72,10 @@ class DownloadDisplay:
         # (collection_slug, dataset_slug) -> its branch under the collection's
         # branch. Same memoization rationale, scoped per dataset.
         self._dataset_branches: dict[tuple[str, str], Tree] = {}
+        # Optional spinner row above the progress bars, used by set_listing()
+        # to surface live LIST-pagination progress while resolve_s3_uris is
+        # walking a huge prefix. Otherwise the user stares at empty bars.
+        self._listing: Spinner | None = None
         self._live = Live(
             self.progress, console=console, refresh_per_second=4, transient=False
         )
@@ -89,6 +94,15 @@ class DownloadDisplay:
         tb: TracebackType | None,
     ) -> bool | None:
         return self._live.__exit__(exc_type, exc, tb)
+
+    def _build_renderable(self) -> RenderableType:
+        parts: list[RenderableType] = []
+        if self._listing is not None:
+            parts.append(self._listing)
+        parts.append(self.progress)
+        if self.failures:
+            parts.append(self._tree)
+        return parts[0] if len(parts) == 1 else Group(*parts)
 
     def advance_task(self, task_id: TaskID, n: int) -> None:
         """Bump one Progress task by `n` bytes.
@@ -113,14 +127,32 @@ class DownloadDisplay:
                 return
             self.progress.update(task_id, total=(task.total or 0) + n)
 
+    def set_listing(self, text: str | None) -> None:
+        """Show a spinner+text row above the progress bars, or clear it (None).
+
+        Used to surface live progress while resolve_s3_uris paginates through
+        a large prefix — without this the user sees an empty Live region for
+        minutes on big datasets. Updates coalesce at the Live refresh rate.
+        """
+        if text is None:
+            if self._listing is None:
+                return  # already cleared; skip the re-render
+            self._listing = None
+        elif self._listing is None:
+            self._listing = Spinner("dots", text=text)
+        else:
+            self._listing.update(text=text)
+        self._live.update(self._build_renderable())
+
     def record_failure(self, f: DownloadFailure) -> None:
         """Append a failure and mutate the failures tree. Not thread-safe — call from the main thread only."""
         assert threading.current_thread() is threading.main_thread(), (
             "record_failure must be called from the main thread"
         )
-        if not self.failures:
-            self._live.update(Group(self.progress, self._tree))
+        was_empty = not self.failures
         self.failures.append(f)
+        if was_empty:
+            self._live.update(self._build_renderable())
 
         coll_branch = self._collection_branches.get(f.collection_slug)
         if coll_branch is None:
