@@ -258,7 +258,7 @@ def test_get_collections_stats_mixed_be_size_and_listing_fallback():
     ) as mock_expand:
         stats = get_collections_stats([coll])
 
-    mock_expand.assert_called_once_with("s3://b/unsized")
+    mock_expand.assert_called_once_with("s3://b/unsized", on_listing_progress=None)
     rows = stats[0][1]
     assert rows[0].total_bytes == 7000
     assert rows[1].total_bytes == 250
