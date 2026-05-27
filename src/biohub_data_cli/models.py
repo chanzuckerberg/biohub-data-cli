@@ -1,6 +1,7 @@
 from dataclasses import dataclass
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class Dataset(BaseModel):
@@ -9,9 +10,18 @@ class Dataset(BaseModel):
     id: str
     slug: str
     title: str
-    file_format: str
     file_size_bytes: int | None = None
     urls: list[str]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_s3_uri(cls, data: Any) -> Any:
+        # Backend `/v1/cli/collections/{id}` returns a single `s3_uri` string per
+        # dataset; wrap it into our list-of-urls shape so HTTP datasets (which
+        # come in as `urls`) and S3 datasets share one field.
+        if isinstance(data, dict) and "s3_uri" in data and "urls" not in data:
+            data = {**data, "urls": [data["s3_uri"]]}
+        return data
 
 
 class Collection(BaseModel):

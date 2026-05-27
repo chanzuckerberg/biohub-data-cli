@@ -51,10 +51,39 @@ MOCK_COLLECTION = Collection.model_validate(
 # ── fetch_collection ────────────────────────────────────────────────────────
 
 
-def test_fetch_collection_raises_when_no_fixtures_dir(monkeypatch):
+def test_fetch_collection_hits_backend_when_no_fixtures_dir(monkeypatch):
     monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
-    with pytest.raises(NotImplementedError, match="DATA_CLI_FIXTURES_DIR"):
-        fetch_collection("coll-1")
+    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+
+    mock_response = type("R", (), {})()
+    mock_response.content = MOCK_COLLECTION.model_dump_json().encode()
+    mock_response.raise_for_status = lambda: None
+
+    with patch(
+        "biohub_data_cli.download.requests.get", return_value=mock_response
+    ) as mock_get:
+        result = fetch_collection("coll-1")
+
+    mock_get.assert_called_once_with(
+        "https://backend.example.com/v1/cli/collections/coll-1", timeout=30
+    )
+    assert result.slug == MOCK_COLLECTION.slug
+
+
+def test_fetch_collection_wraps_request_errors_as_click_exception(monkeypatch):
+    import requests as requests_mod
+
+    monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
+    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+
+    with patch(
+        "biohub_data_cli.download.requests.get",
+        side_effect=requests_mod.ConnectionError("boom"),
+    ):
+        with pytest.raises(
+            click.ClickException, match="Failed to fetch collection coll-1"
+        ):
+            fetch_collection("coll-1")
 
 
 def test_fetch_collection_loads_from_fixtures_dir(tmp_path, monkeypatch):
