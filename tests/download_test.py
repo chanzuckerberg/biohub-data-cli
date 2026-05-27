@@ -1,11 +1,14 @@
 import inspect
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import click
 import pytest
+import requests
 from click.testing import CliRunner
 
 from biohub_data_cli.download import (
@@ -31,7 +34,6 @@ MOCK_COLLECTION = Collection.model_validate(
                 "id": "ds-1",
                 "slug": "matrix-a",
                 "title": "Matrix A",
-                "file_format": "parquet",
                 "file_size_bytes": 1024,
                 "urls": ["https://example.com/a.parquet"],
             },
@@ -39,7 +41,6 @@ MOCK_COLLECTION = Collection.model_validate(
                 "id": "ds-2",
                 "slug": "matrix-b",
                 "title": "Matrix B",
-                "file_format": "zarr_v3",
                 "file_size_bytes": 512,
                 "urls": ["s3://bucket/matrix-b/"],
             },
@@ -55,9 +56,10 @@ def test_fetch_collection_hits_backend_when_no_fixtures_dir(monkeypatch):
     monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
     monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
 
-    mock_response = type("R", (), {})()
-    mock_response.content = MOCK_COLLECTION.model_dump_json().encode()
-    mock_response.raise_for_status = lambda: None
+    mock_response = SimpleNamespace(
+        content=MOCK_COLLECTION.model_dump_json().encode(),
+        raise_for_status=lambda: None,
+    )
 
     with patch(
         "biohub_data_cli.download.requests.get", return_value=mock_response
@@ -70,15 +72,44 @@ def test_fetch_collection_hits_backend_when_no_fixtures_dir(monkeypatch):
     assert result.slug == MOCK_COLLECTION.slug
 
 
-def test_fetch_collection_wraps_request_errors_as_click_exception(monkeypatch):
-    import requests as requests_mod
+def test_fetch_collection_wraps_backend_s3_uri_into_urls(monkeypatch):
+    # BE returns a singular `s3_uri` per dataset; the validator wraps it into
+    # our `urls: list[str]` shape so the download stack sees one field.
+    monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
+    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
 
+    backend_payload = {
+        "id": "coll-1",
+        "slug": "test-collection",
+        "title": "Test Collection",
+        "datasets": [
+            {
+                "id": "ds-1",
+                "slug": "matrix-a",
+                "title": "Matrix A",
+                "file_size_bytes": 1024,
+                "s3_uri": "s3://bucket/matrix-a/",
+            }
+        ],
+    }
+    mock_response = SimpleNamespace(
+        content=json.dumps(backend_payload).encode(),
+        raise_for_status=lambda: None,
+    )
+
+    with patch("biohub_data_cli.download.requests.get", return_value=mock_response):
+        result = fetch_collection("coll-1")
+
+    assert result.datasets[0].urls == ["s3://bucket/matrix-a/"]
+
+
+def test_fetch_collection_wraps_request_errors_as_click_exception(monkeypatch):
     monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
     monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
 
     with patch(
         "biohub_data_cli.download.requests.get",
-        side_effect=requests_mod.ConnectionError("boom"),
+        side_effect=requests.ConnectionError("boom"),
     ):
         with pytest.raises(
             click.ClickException, match="Failed to fetch collection coll-1"
@@ -187,7 +218,6 @@ def test_submit_dataset_downloads_routes_and_collects_submission_failures(tmp_pa
             "id": "ds-1",
             "slug": "matrix-a",
             "title": "Matrix A",
-            "file_format": "parquet",
             "urls": ["https://example.com/a.csv", "s3://bucket/b.h5ad"],
         }
     )
@@ -231,7 +261,6 @@ def test_submit_dataset_downloads_unknown_scheme(tmp_path):
             "id": "ds-1",
             "slug": "matrix-a",
             "title": "Matrix A",
-            "file_format": "parquet",
             "urls": ["ftp://example.com/file.h5ad"],
         }
     )
@@ -262,7 +291,6 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(tmp_path):
             "id": "ds-1",
             "slug": "matrix-zarr",
             "title": "Zarr Matrix",
-            "file_format": "zarr_v3",
             "urls": ["s3://bucket/zarr-store/"],
         }
     )
@@ -309,7 +337,6 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path
             "id": "ds-1",
             "slug": "matrix-zarr",
             "title": "Zarr Matrix",
-            "file_format": "zarr_v3",
             "urls": ["s3://bucket/bad-prefix/"],
         }
     )
@@ -369,14 +396,12 @@ def test_download_collections_submits_every_dataset_across_collections(tmp_path)
                     "id": "d1",
                     "slug": "ds1",
                     "title": "D1",
-                    "file_format": "parquet",
                     "urls": ["https://example.com/a1.parquet"],
                 },
                 {
                     "id": "d2",
                     "slug": "ds2",
                     "title": "D2",
-                    "file_format": "parquet",
                     "urls": ["https://example.com/a2.parquet"],
                 },
             ],
@@ -392,7 +417,6 @@ def test_download_collections_submits_every_dataset_across_collections(tmp_path)
                     "id": "d3",
                     "slug": "ds3",
                     "title": "D3",
-                    "file_format": "parquet",
                     "urls": ["https://example.com/b1.parquet"],
                 },
             ],
@@ -492,7 +516,6 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(tmp_path
             "id": "ds-1",
             "slug": "matrix-zarr",
             "title": "Z",
-            "file_format": "zarr_v3",
             "file_size_bytes": 5000,
             "urls": ["s3://bucket/zarr/"],
         }
@@ -535,7 +558,6 @@ def test_submit_dataset_downloads_http_only_ignores_be_file_size_bytes(tmp_path)
             "id": "ds-1",
             "slug": "http-only",
             "title": "HTTP only",
-            "file_format": "parquet",
             "file_size_bytes": 9999,
             "urls": [
                 "https://example.com/a.parquet",
@@ -574,7 +596,6 @@ def test_submit_dataset_downloads_no_progress_task_when_only_submission_failures
             "id": "ds-1",
             "slug": "matrix",
             "title": "M",
-            "file_format": "parquet",
             "urls": ["ftp://example.com/file.h5ad"],
         }
     )
@@ -633,7 +654,6 @@ def test_dry_run_exits_nonzero_when_size_lookups_fail(tmp_path):
                     "id": "ds-1",
                     "slug": "matrix-b",
                     "title": "Matrix B",
-                    "file_format": "zarr_v3",
                     "urls": ["s3://bucket/matrix-b/"],
                 },
             ],
