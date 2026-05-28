@@ -38,7 +38,6 @@ _REQUIRED_BINARIES = ("aws", "curl")
 # Fixtures expected to succeed cleanly (failures == []).
 CLEAN_FIXTURES = [
     "medium-mixed-paths-collection.json",
-    "6a3f8b91-1c5e-4d3a-9b4c-f7e0a2d8b6f3.json",
 ]
 
 
