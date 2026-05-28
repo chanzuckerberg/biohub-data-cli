@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 import requests
+from pydantic import ValidationError
 from rich.filesize import decimal as format_bytes
 from rich.markup import escape
 
@@ -50,11 +51,16 @@ def fetch_collection(collection_id: str) -> Collection:
     try:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
+        return Collection.model_validate_json(response.content)
     except requests.RequestException as e:
+        status = e.response.status_code if e.response is not None else "n/a"
         raise click.ClickException(
-            f"Failed to fetch collection {collection_id} from {url}: {e}"
+            f"Failed to fetch collection {collection_id} from {url} (status={status}): {e}"
         ) from e
-    return Collection.model_validate_json(response.content)
+    except ValidationError as e:
+        raise click.ClickException(
+            f"Unexpected response shape for collection {collection_id} from {url}: {e}"
+        ) from e
 
 
 def submit_dataset_downloads(
