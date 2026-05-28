@@ -44,9 +44,10 @@ CLEAN_FIXTURES = [
 def _aws_s3_ls(url: str) -> list[tuple[str, int]]:
     """Run `aws s3 ls --no-sign-request --recursive <url>` and parse (key, size) pairs.
 
-    If the recursive listing is empty the URL probably points at a single object,
-    so we fall back to a non-recursive `aws s3 ls` and reconstruct the key from
-    the URL path.
+    Filters directory-marker keys (ending in `/`) so the result matches what the
+    CLI's `expand_s3_location` actually downloads. If the listing is empty the
+    URL probably points at a single object, so we fall back to a non-recursive
+    `aws s3 ls` and reconstruct the key from the URL path.
     """
     proc = subprocess.run(
         ["aws", "s3", "ls", "--no-sign-request", "--recursive", url],
@@ -60,6 +61,8 @@ def _aws_s3_ls(url: str) -> list[tuple[str, int]]:
         out = []
         for line in lines:
             _date, _time, size, key = line.split(maxsplit=3)
+            if key.endswith("/"):
+                continue
             out.append((key, int(size)))
         return out
 
