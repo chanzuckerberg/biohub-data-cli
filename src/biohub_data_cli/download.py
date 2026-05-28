@@ -5,14 +5,20 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import click
+import requests
+from pydantic import ValidationError
+from rich.filesize import decimal as format_bytes
 from rich.markup import escape
 
+from biohub_data_cli.config import service_url
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
 from biohub_data_cli.utils.cli import DownloadDisplay, console
 from biohub_data_cli.utils.http import download_http
 from biohub_data_cli.utils.s3 import (
     S3_MAX_WORKERS,
     download_s3_object,
+    mark_phase,
+    print_s3_debug_summary_if_enabled,
     resolve_s3_uris,
 )
 from biohub_data_cli.utils.stats import (
@@ -28,11 +34,11 @@ _FIXTURES_DIR_ENV = "DATA_CLI_FIXTURES_DIR"
 
 
 def fetch_collection(collection_id: str) -> Collection:
-    """Fetch a collection by ID.
+    """Fetch a collection by id from the OPS backend's `/v1/cli/collections/{id}`.
 
-    Backend endpoint is pending; until it lands, set $DATA_CLI_FIXTURES_DIR
-    to a directory of `<collection_id>.json` files validated against `Collection`.
-    Remove this branch once the real endpoint is wired up.
+    $DATA_CLI_FIXTURES_DIR, if set, short-circuits the HTTP call and loads
+    `<collection_id>.json` from that directory. Used by integration tests to
+    exercise the download stack without a live backend.
     """
     fixtures_dir = os.environ.get(_FIXTURES_DIR_ENV)
     if fixtures_dir:
@@ -40,10 +46,21 @@ def fetch_collection(collection_id: str) -> Collection:
         if not path.exists():
             raise click.ClickException(f"No fixture for {collection_id} at {path}")
         return Collection.model_validate_json(path.read_text())
-    raise NotImplementedError(
-        f"fetch_collection is stubbed; backend endpoint pending (id={collection_id}). "
-        f"Set ${_FIXTURES_DIR_ENV} to test with local fixtures."
-    )
+
+    url = f"{service_url()}/v1/cli/collections/{collection_id}"
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return Collection.model_validate_json(response.content)
+    except requests.RequestException as e:
+        status = e.response.status_code if e.response is not None else "n/a"
+        raise click.ClickException(
+            f"Failed to fetch collection {collection_id} from {url} (status={status}): {e}"
+        ) from e
+    except ValidationError as e:
+        raise click.ClickException(
+            f"Unexpected response shape for collection {collection_id} from {url}: {e}"
+        ) from e
 
 
 def submit_dataset_downloads(
@@ -93,9 +110,24 @@ def submit_dataset_downloads(
     # Expand S3 prefixes into (uri, size) pairs so we can both submit each
     # object as its own future and seed the progress task with the actual
     # byte total directly from list_objects_v2 / head_object.
+    #
+    # Pipe per-page progress to the display so the user sees the LIST walk
+    # advancing — without this, huge prefixes (millions of zarr chunks) show
+    # an empty Live region for minutes before any download bar appears.
+    label = f"{collection_slug}/{dataset.slug}"
+
+    def on_listing_progress(n_objects: int, total_bytes: int) -> None:
+        display.set_listing(
+            f"listing {label} · {n_objects:,} objects · {format_bytes(total_bytes)}"
+        )
+
     s3_objects, listing_failures = resolve_s3_uris(
-        collection_slug, dataset.slug, s3_uris
+        collection_slug,
+        dataset.slug,
+        s3_uris,
+        on_listing_progress=on_listing_progress,
     )
+    display.set_listing(None)
     submission_failures.extend(listing_failures)
 
     if not s3_objects and not http_urls:
@@ -103,8 +135,10 @@ def submit_dataset_downloads(
 
     # Seed total with what we already know: S3 sizes are exact and free.
     # HTTP totals get added as workers learn Content-Length (see on_size_known).
-    # If no initial total, fall back to the curator-provided file_size_bytes.
-    initial_total = sum(size for _, size in s3_objects) or dataset.file_size_bytes
+    # Don't fall back to dataset.file_size_bytes — grow_task_total adds, so
+    # mixing a BE estimate with per-worker Content-Length growth double-counts.
+    # HTTP-only datasets just start indeterminate until the first header lands.
+    initial_total = sum(size for _, size in s3_objects)
     task_id = display.progress.add_task(
         escape(f"{collection_slug}/{dataset.slug}"),
         total=initial_total or None,
@@ -173,16 +207,25 @@ def download_collections(
                     display.record_failure(f)
                 all_futures.extend(futs)
 
+        # All listings done; per-object downloads dominate from here. Attribution
+        # is fuzzy if datasets interleave (later datasets' listings would land in
+        # "download" phase) but accurate for single-dataset runs.
+        mark_phase("download")
+
         try:
             for future in as_completed(all_futures):
                 result = future.result()
                 if result is not None:
                     display.record_failure(result)
         except KeyboardInterrupt as e:
-            # Defer the user-facing message until after the with-block exits
-            # so it lands below the (now-frozen) progress bars rather than
-            # being squeezed above the live region.
             cancel.set()
+            # Rich Live with transient=False lets console.print insert above
+            # the still-active progress bars, so the user gets immediate
+            # feedback while in-flight workers drain (which can take several
+            # seconds before the with-block can exit).
+            console.print(
+                "\n[yellow]cancelling — waiting for in-flight downloads to drain…[/yellow]"
+            )
             http_pool.shutdown(wait=False, cancel_futures=True)
             s3_pool.shutdown(wait=False, cancel_futures=True)
             kbi = e
@@ -254,7 +297,9 @@ def download_collection_command(
         # waited for shutdown) and printed the cancellation line. os._exit
         # skips interpreter finalizers — abandoned sockets in S3Transfer's
         # internal thread pool would otherwise produce noisy "Exception
-        # ignored while finalizing file <HTTPResponse>" tracebacks.
+        # ignored while finalizing file <HTTPResponse>" tracebacks. atexit
+        # is also skipped, so force the debug summary out beforehand.
+        print_s3_debug_summary_if_enabled()
         os._exit(130)
 
     if failures:
