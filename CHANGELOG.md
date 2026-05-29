@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/chanzuckerberg/biohub-data-cli/compare/v0.2.0...v0.3.0) (2026-05-29)
+
+
+### Features
+
+* enable 0.x version to be published to pypi ([#26](https://github.com/chanzuckerberg/biohub-data-cli/issues/26)) ([2b8e636](https://github.com/chanzuckerberg/biohub-data-cli/commit/2b8e636ac4ad98c68371bd2edbc21ec37ad5d6a9))
+
 ## [0.2.0](https://github.com/chanzuckerberg/biohub-data-cli/compare/v0.1.1...v0.2.0) (2026-05-28)
 
 
