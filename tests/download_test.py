@@ -66,10 +66,33 @@ def test_fetch_collection_hits_backend_when_no_fixtures_dir(monkeypatch):
     ) as mock_get:
         result = fetch_collection("coll-1")
 
-    mock_get.assert_called_once_with(
-        "https://backend.example.com/v1/cli/collections/coll-1", timeout=30
-    )
+    args, kwargs = mock_get.call_args
+    assert args == ("https://backend.example.com/v1/cli/collections/coll-1",)
+    assert kwargs["timeout"] == 30
+    # User-Agent carries the version the backend parses; no dry-run header on a
+    # plain (download) fetch.
+    assert kwargs["headers"]["User-Agent"].startswith("biohub-data-cli/")
+    assert "X-Biohub-Data-Cli-Dry-Run" not in kwargs["headers"]
     assert result.slug == MOCK_COLLECTION.slug
+
+
+def test_fetch_collection_sends_dry_run_header(monkeypatch):
+    monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
+    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+
+    mock_response = SimpleNamespace(
+        content=MOCK_COLLECTION.model_dump_json().encode(),
+        raise_for_status=lambda: None,
+    )
+
+    with patch(
+        "biohub_data_cli.download.requests.get", return_value=mock_response
+    ) as mock_get:
+        fetch_collection("coll-1", dry_run=True)
+
+    headers = mock_get.call_args.kwargs["headers"]
+    assert headers["X-Biohub-Data-Cli-Dry-Run"] == "true"
+    assert headers["User-Agent"].startswith("biohub-data-cli/")
 
 
 def test_fetch_collection_wraps_backend_s3_uri_into_urls(monkeypatch):
@@ -151,7 +174,7 @@ def test_download_collection_fetches_and_downloads(tmp_path):
         )
 
         assert result.exit_code == 0, result.output
-        mock_fetch.assert_called_once_with("coll-1")
+        mock_fetch.assert_called_once_with("coll-1", dry_run=False)
         passed_collections, _ = mock_dl.call_args[0]
         assert [c.slug for c in passed_collections] == ["test-collection"]
 
