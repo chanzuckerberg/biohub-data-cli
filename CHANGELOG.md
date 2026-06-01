@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/chanzuckerberg/biohub-data-cli/compare/v0.3.0...v0.4.0) (2026-06-01)
+
+
+### Features
+
+* inform user and let them opt out of analytics ([#29](https://github.com/chanzuckerberg/biohub-data-cli/issues/29)) ([d459d98](https://github.com/chanzuckerberg/biohub-data-cli/commit/d459d9895099afaeb5fd21626b3840cc262c3950))
+
 ## [0.3.0](https://github.com/chanzuckerberg/biohub-data-cli/compare/v0.2.0...v0.3.0) (2026-05-29)
 
 
