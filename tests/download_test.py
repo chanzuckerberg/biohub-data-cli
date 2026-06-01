@@ -12,6 +12,7 @@ import requests
 from click.testing import CliRunner
 
 from biohub_data_cli.download import (
+    analytics_disabled,
     download_collections,
     fetch_collection,
     submit_dataset_downloads,
@@ -95,6 +96,62 @@ def test_fetch_collection_sends_dry_run_header(monkeypatch):
     assert headers["User-Agent"].startswith("biohub-data-cli/")
 
 
+def test_fetch_collection_omits_disable_analytics_header_by_default(monkeypatch):
+    monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
+    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+
+    mock_response = SimpleNamespace(
+        content=MOCK_COLLECTION.model_dump_json().encode(),
+        raise_for_status=lambda: None,
+    )
+
+    with patch(
+        "biohub_data_cli.download.requests.get", return_value=mock_response
+    ) as mock_get:
+        fetch_collection("coll-1")
+
+    headers = mock_get.call_args.kwargs["headers"]
+    assert "X-Biohub-Data-Cli-Disable-Analytics" not in headers
+
+
+def test_fetch_collection_sends_disable_analytics_header_when_opted_out(monkeypatch):
+    monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
+    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+
+    mock_response = SimpleNamespace(
+        content=MOCK_COLLECTION.model_dump_json().encode(),
+        raise_for_status=lambda: None,
+    )
+
+    with patch(
+        "biohub_data_cli.download.requests.get", return_value=mock_response
+    ) as mock_get:
+        fetch_collection("coll-1", analytics=False)
+
+    headers = mock_get.call_args.kwargs["headers"]
+    assert headers["X-Biohub-Data-Cli-Disable-Analytics"] == "true"
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        (None, False),
+        ("true", True),
+        ("TRUE", True),
+        ("  true  ", True),
+        ("1", False),  # only "true" opts out, matching PR #10
+        ("yes", False),
+        ("", False),
+    ],
+)
+def test_analytics_disabled(monkeypatch, env, expected):
+    if env is None:
+        monkeypatch.delenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", raising=False)
+    else:
+        monkeypatch.setenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", env)
+    assert analytics_disabled() is expected
+
+
 def test_fetch_collection_wraps_backend_s3_uri_into_urls(monkeypatch):
     # BE returns a singular `s3_uri` per dataset; the validator wraps it into
     # our `urls: list[str]` shape so the download stack sees one field.
@@ -174,9 +231,26 @@ def test_download_collection_fetches_and_downloads(tmp_path):
         )
 
         assert result.exit_code == 0, result.output
-        mock_fetch.assert_called_once_with("coll-1", dry_run=False)
+        mock_fetch.assert_called_once_with("coll-1", dry_run=False, analytics=True)
         passed_collections, _ = mock_dl.call_args[0]
         assert [c.slug for c in passed_collections] == ["test-collection"]
+
+
+def test_disable_analytics_env_var_disables_analytics(tmp_path, monkeypatch):
+    monkeypatch.setenv("DISABLE_BIOHUB_DATA_CLI_ANALYTICS", "true")
+    with (
+        patch("biohub_data_cli.download.fetch_collection") as mock_fetch,
+        patch("biohub_data_cli.download.download_collections") as mock_dl,
+    ):
+        mock_fetch.return_value = MOCK_COLLECTION
+        mock_dl.return_value = []
+
+        result = CliRunner().invoke(
+            cli, ["download", "collection", "coll-1", "-o", str(tmp_path), "--yes"]
+        )
+
+        assert result.exit_code == 0, result.output
+        mock_fetch.assert_called_once_with("coll-1", dry_run=False, analytics=False)
 
 
 def test_download_collection_accepts_multiple_ids(tmp_path):
