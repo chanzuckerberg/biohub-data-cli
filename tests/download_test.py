@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from biohub_data_cli.download import (
     _list_and_record,
     download_collections,
+    ensure_collection_listed,
     fetch_collection,
     submit_dataset_downloads,
 )
@@ -456,6 +457,83 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(tmp_path
     assert failure.dataset_slug == "matrix-zarr"
     assert failure.url == "s3://bucket/bad-prefix/"
     assert "listing failed" in failure.reason
+
+
+def test_ensure_collection_listed_marks_fresh_when_all_datasets_list_cleanly(tmp_path):
+    """Happy path: every dataset lists without error, so the listing is
+    cacheable and a resume run can trust it."""
+    collection = Collection.model_validate(
+        {
+            "id": "coll-1",
+            "slug": "coll",
+            "title": "Coll",
+            "datasets": [
+                {
+                    "id": "ds-1",
+                    "slug": "matrix-a",
+                    "title": "A",
+                    "urls": ["s3://bucket/a.h5ad"],
+                }
+            ],
+        }
+    )
+    db = DownloadStateDB.for_collection(Path(tmp_path), "coll")
+    with patch(
+        "biohub_data_cli.utils.s3.expand_s3_location",
+        return_value=[("s3://bucket/a.h5ad", 100)],
+    ):
+        ensure_collection_listed(collection, db, DownloadDisplay())
+
+    assert db.is_listing_fresh() is True
+
+
+def test_ensure_collection_listed_not_fresh_when_a_dataset_fails_to_list(tmp_path):
+    """Regression: a partial listing must NOT be marked complete.
+
+    If one dataset's S3 prefix fails to list, the listing is left non-fresh so
+    the next run re-lists from scratch. Otherwise resume would skip listing,
+    find no entries for the failed dataset, never resurface the failure, and
+    falsely report success.
+    """
+    collection = Collection.model_validate(
+        {
+            "id": "coll-1",
+            "slug": "coll",
+            "title": "Coll",
+            "datasets": [
+                {
+                    "id": "ds-ok",
+                    "slug": "matrix-ok",
+                    "title": "OK",
+                    "urls": ["s3://bucket/good/a.h5ad"],
+                },
+                {
+                    "id": "ds-bad",
+                    "slug": "matrix-bad",
+                    "title": "Bad",
+                    "urls": ["s3://bucket/bad-prefix/"],
+                },
+            ],
+        }
+    )
+    db = DownloadStateDB.for_collection(Path(tmp_path), "coll")
+    display = DownloadDisplay()
+
+    def fake_expand(uri, *args, **kwargs):
+        if uri == "s3://bucket/bad-prefix/":
+            raise RuntimeError("listing failed: access denied")
+        return [(uri, 100)]
+
+    with patch(
+        "biohub_data_cli.utils.s3.expand_s3_location",
+        side_effect=fake_expand,
+    ):
+        ensure_collection_listed(collection, db, display)
+
+    # The failure is surfaced now...
+    assert any(f.dataset_slug == "matrix-bad" for f in display.failures)
+    # ...and the listing is NOT trusted for resume, so the next run re-lists.
+    assert db.is_listing_fresh() is False
 
 
 # ── download_collections ────────────────────────────────────────────────────

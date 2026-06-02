@@ -175,19 +175,27 @@ def ensure_collection_listed(
 
     Unconditionally nukes any existing DB and re-lists — the caller is
     responsible for deciding whether listing is needed (cf. `is_listing_fresh`
-    and the `--resume` flag in `download_collections`). After this call,
-    `db.is_listing_fresh()` returns True until TTL.
+    and the `--resume` flag in `download_collections`).
 
     Listing failures are recorded against `display` rather than raised, so
     one bad prefix doesn't prevent other datasets in the same collection
     from being listed and downloaded.
+
+    The listing is marked complete (and thus cacheable for resume) ONLY when
+    every dataset listed cleanly. If any dataset failed to list, we leave
+    `listing_completed_at` NULL so `is_listing_fresh()` returns False and the
+    next run re-lists from scratch.
     """
     db.init_fresh()
+    had_listing_failure = False
     for dataset in collection.datasets:
         listing_failures = _list_and_record(collection.slug, dataset, db, display)
         for f in listing_failures:
             display.record_failure(f)
-    db.mark_listing_complete()
+        if listing_failures:
+            had_listing_failure = True
+    if not had_listing_failure:
+        db.mark_listing_complete()
 
 
 def _list_and_record(

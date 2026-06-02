@@ -1,0 +1,21 @@
+{
+  "id": "small-mixed-paths-collection",
+  "slug": "small-mixed-paths-collection",
+  "title": "Small: HTTP single-object + S3 single-object (~22 KiB)",
+  "datasets": [
+    {
+      "id": "http-only-thumbnail",
+      "slug": "http-only-thumbnail",
+      "title": "HTTP-only: single thumbnail JPEG",
+      "file_size_bytes": 20624,
+      "urls": ["https://biohub-data-cli-public-fixtures.s3.us-west-2.amazonaws.com/10217/Images/thumbnail.jpg"]
+    },
+    {
+      "id": "s3-only-metadata",
+      "slug": "s3-only-metadata",
+      "title": "S3-only: single dataset_metadata.json (head_object branch)",
+      "file_size_bytes": 1965,
+      "urls": ["s3://biohub-data-cli-public-fixtures/10217/dataset_metadata.json"]
+    }
+  ]
+}
