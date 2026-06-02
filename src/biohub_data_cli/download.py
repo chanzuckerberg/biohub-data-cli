@@ -13,7 +13,11 @@ from rich.markup import escape
 from biohub_data_cli.config import service_url
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
 from biohub_data_cli.utils.cli import DownloadDisplay, console
-from biohub_data_cli.utils.download_state import CollectionEntry, DownloadStateDB
+from biohub_data_cli.utils.download_state import (
+    LISTING_TTL,
+    CollectionEntry,
+    DownloadStateDB,
+)
 from biohub_data_cli.utils.http import download_http
 from biohub_data_cli.utils.s3 import (
     S3_MAX_WORKERS,
@@ -99,14 +103,23 @@ def submit_dataset_downloads(
     if not entries:
         return {}
 
-    done_bytes = sum(e.expected_size or 0 for e in entries if e.downloaded)
-    total_bytes = sum(e.expected_size or 0 for e in entries)
+    # Single pass: byte totals for the progress bar plus the completion flag.
+    done_bytes = 0
+    total_bytes = 0
+    all_downloaded = True
+    for e in entries:
+        size = e.expected_size or 0
+        total_bytes += size
+        if e.downloaded:
+            done_bytes += size
+        else:
+            all_downloaded = False
 
-    if done_bytes == total_bytes and total_bytes > 0:
+    if all_downloaded:
         # Everything is on disk already — show a completed bar without
         # submitting any work.
         display.progress.add_task(
-            escape(label), total=total_bytes, completed=done_bytes
+            escape(label), total=total_bytes or None, completed=done_bytes
         )
         return {}
 
@@ -259,9 +272,9 @@ def download_collections(
 
     Per-collection state lives at `outdir/{collection.slug}/.biohub-data-cli/state.db`
     and is intentionally kept after success — within TTL, re-running the same
-    command becomes a fast integrity-check no-op rather than a full re-list and
-    re-download. The DB rotates out when its `listing_completed_at` exceeds TTL
-    or the user passes `--no-resume`.
+    command re-submits only entries not yet marked `downloaded`, so a completed
+    run becomes a fast no-op rather than a full re-list and re-download. The DB
+    rotates out when its `listing_completed_at` exceeds TTL or the user passes `--no-resume`.
     """
     # Shared cancellation signal. Workers check it between chunks and bail out,
     # cleaning up their .part file, so that all workers exit within one chunk
@@ -358,10 +371,6 @@ def download_collections(
         )
         raise kbi
 
-    # Intentionally leave state DBs in place even on full success. Re-running
-    # the same command within TTL becomes a fast no-op via the per-file
-    # integrity check (file exists + size matches), instead of re-listing and
-    # re-downloading from scratch. `--no-resume` is the explicit opt-out.
     return display.failures
 
 
@@ -392,8 +401,8 @@ def download_group() -> None:
     "--resume/--no-resume",
     default=True,
     help="Skip files already downloaded in a prior run if cached state is "
-    "available and within TTL (5 days). --no-resume forces a fresh listing "
-    "and re-download.",
+    f"available and within TTL ({LISTING_TTL.days} days). --no-resume forces a "
+    "fresh listing and re-download.",
 )
 def download_collection_command(
     ids: tuple[str, ...], outdir: Path, yes: bool, dry_run: bool, resume: bool

@@ -274,6 +274,62 @@ def test_submit_dataset_downloads_routes_and_collects_submission_failures(tmp_pa
     mock_s3.assert_called_once()
 
 
+def test_submit_dataset_downloads_resume_submits_pending_http_when_s3_done(tmp_path):
+    """Mixed S3+HTTP dataset: if the S3 objects are already marked downloaded
+    but the HTTP file is not, resume must still submit the HTTP download.
+
+    HTTP entries are stored with expected_size=None, so a byte-sum completion
+    check would treat this dataset as complete and silently skip the HTTP file.
+    Completion must key off the `downloaded` flag, not byte totals.
+    """
+    dataset = Dataset.model_validate(
+        {
+            "id": "ds-1",
+            "slug": "matrix-a",
+            "title": "Matrix A",
+            "urls": ["https://example.com/a.csv", "s3://bucket/b.h5ad"],
+        }
+    )
+
+    with (
+        patch("biohub_data_cli.download.download_http") as mock_http,
+        patch("biohub_data_cli.download.download_s3_object") as mock_s3,
+        patch(
+            "biohub_data_cli.utils.s3.expand_s3_location",
+            return_value=[("s3://bucket/b.h5ad", 100)],
+        ),
+    ):
+        mock_http.return_value = None
+        mock_s3.return_value = None
+
+        db = _fresh_db(tmp_path)
+        display = DownloadDisplay()
+        _list_and_record("coll", dataset, db, display)
+        # Simulate a prior run that finished the S3 object but not the HTTP file.
+        db.mark_downloaded("matrix-a", "s3://bucket/b.h5ad")
+
+        with (
+            ThreadPoolExecutor(max_workers=2) as http_ex,
+            ThreadPoolExecutor(max_workers=2) as s3_ex,
+        ):
+            futures = submit_dataset_downloads(
+                "coll",
+                dataset,
+                Path(tmp_path),
+                db,
+                http_ex,
+                s3_ex,
+                display,
+                _NEVER_CANCEL,
+            )
+            for f in futures:
+                f.result()
+
+    assert len(futures) == 1
+    mock_http.assert_called_once()
+    mock_s3.assert_not_called()
+
+
 def test_submit_dataset_downloads_unknown_scheme(tmp_path):
     dataset = Dataset.model_validate(
         {
