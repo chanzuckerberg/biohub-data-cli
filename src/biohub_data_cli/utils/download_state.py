@@ -68,6 +68,10 @@ class DownloadStateDB:
             # 5s busy timeout — give SQLite room to retry instead of failing
             # fast if it ever does encounter a writer collision.
             conn.execute("PRAGMA busy_timeout=5000")
+            # synchronous=NORMAL (WAL): fsync at checkpoint, not on every commit.
+            # NORMAL can lose the last few commits on OS crash/power loss but
+            # never corrupts the DB — and anything left unmarked re-downloads on resume.
+            conn.execute("PRAGMA synchronous=NORMAL")
             yield conn
         finally:
             conn.close()
