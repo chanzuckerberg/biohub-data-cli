@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from biohub_data_cli.utils import download_state
@@ -106,7 +106,9 @@ def test_is_listing_fresh_true_after_mark_complete(tmp_path: Path) -> None:
 def test_is_listing_fresh_false_after_ttl_expiry(tmp_path: Path) -> None:
     db = _new_db(tmp_path)
     # Hand-write a timestamp older than TTL — simpler than freezing time.
-    expired = datetime.now() - download_state.LISTING_TTL - timedelta(minutes=1)
+    expired = (
+        datetime.now(timezone.utc) - download_state.LISTING_TTL - timedelta(minutes=1)
+    )
     with sqlite3.connect(db.path) as conn:
         conn.execute(
             "UPDATE collection_metadata SET listing_completed_at = ?",
@@ -130,14 +132,19 @@ def test_is_listing_fresh_false_for_corrupted_db(tmp_path: Path) -> None:
 def test_delete_removes_db_and_wal_sidecars(tmp_path: Path) -> None:
     db = _new_db(tmp_path)
     db.insert_entries([CollectionEntry("ds1", "s3://b/k", 100, downloaded=False)])
-    # Force WAL/SHM sidecars to materialize by holding a write.
-    with sqlite3.connect(db.path) as conn:
+    # Force WAL/SHM sidecars to materialize by holding a write. Close the
+    # connection before delete() — sqlite3's `with` commits but does NOT close,
+    # and unlinking a file with an open handle fails on Windows.
+    conn = sqlite3.connect(db.path)
+    try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             "INSERT INTO collection_entries (dataset_slug, url, expected_size, downloaded) "
             "VALUES ('ds2', 's3://b/z', 1, 0)"
         )
         conn.commit()
+    finally:
+        conn.close()
 
     db.delete()
 

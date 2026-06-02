@@ -17,7 +17,7 @@ write from worker threads.
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -65,9 +65,6 @@ class DownloadStateDB:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path)
         try:
-            # WAL: readers never block writers and vice-versa. Cheap insurance
-            # if the worker-marking path ever moves off the main thread.
-            conn.execute("PRAGMA journal_mode=WAL")
             # 5s busy timeout — give SQLite room to retry instead of failing
             # fast if it ever does encounter a writer collision.
             conn.execute("PRAGMA busy_timeout=5000")
@@ -96,6 +93,10 @@ class DownloadStateDB:
         self._unlink_files()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
+            # WAL: readers never block writers and vice-versa. Cheap insurance
+            # if the worker-marking path ever moves off the main thread. Set
+            # once here — it's persisted in the DB header for all later opens.
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
             conn.execute(
                 "INSERT INTO collection_metadata (listing_completed_at) VALUES (NULL)"
@@ -103,8 +104,15 @@ class DownloadStateDB:
             conn.commit()
 
     def delete(self) -> None:
-        """Remove the state DB. Call on full collection success — the resume
-        state has served its purpose and the user shouldn't see leftover files.
+        """Remove the state DB entirely.
+
+        NOT called on collection success — by design the DB is kept so a
+        re-run within TTL is a fast no-op (`download collection` doesn't
+        re-download succeeded files unless the user passes `--no-resume`).
+        `--no-resume` itself goes through `init_fresh()`, which overwrites in
+        place. This is a teardown helper for callers that genuinely want the
+        state gone; nothing in the download path calls it today.
+
         Also rmdir's the parent `.biohub-data-cli/` if empty; leaves it alone
         if a future feature has stored other state there.
         """
@@ -129,18 +137,18 @@ class DownloadStateDB:
                 row = conn.execute(
                     "SELECT listing_completed_at FROM collection_metadata LIMIT 1"
                 ).fetchone()
-        except sqlite3.DatabaseError:
+            if row is None or row[0] is None:
+                return False
+            completed_at = datetime.fromisoformat(row[0])
+            return datetime.now(timezone.utc) - completed_at < LISTING_TTL
+        except (sqlite3.DatabaseError, ValueError):
             return False
-        if row is None or row[0] is None:
-            return False
-        completed_at = datetime.fromisoformat(row[0])
-        return datetime.now() - completed_at < LISTING_TTL
 
     def mark_listing_complete(self) -> None:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE collection_metadata SET listing_completed_at = ?",
-                (datetime.now().isoformat(),),
+                (datetime.now(timezone.utc).isoformat(),),
             )
             conn.commit()
 
