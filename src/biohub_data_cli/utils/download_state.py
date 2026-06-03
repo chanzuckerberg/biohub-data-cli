@@ -178,6 +178,7 @@ class DownloadStateDB:
             conn.commit()
 
     def mark_downloaded(self, dataset_slug: str, url: str) -> None:
+        """Flag one (dataset, url) as downloaded."""
         with self._connect() as conn:
             conn.execute(
                 "UPDATE collection_entries SET downloaded = 1 "
@@ -187,16 +188,15 @@ class DownloadStateDB:
             conn.commit()
 
     def iter_entries_for_dataset(self, dataset_slug: str) -> Iterator[CollectionEntry]:
-        """Stream `CollectionEntry` rows for one dataset via cursor iteration.
+        """Yield `CollectionEntry` rows for one dataset via cursor iteration.
 
-        Generator instead of `fetchall()` so the caller can walk millions of
-        rows (aconcagua: 5M+) without materializing them all — peak memory
-        stays at O(1) rather than O(N × ~150 B/CollectionEntry).
-
-        The connection is held open until the iterator is exhausted (the
-        `with` block exits on generator return). Consumers should iterate to
-        completion or wrap calls in `list(...)`; partial iteration leaves the
-        connection alive until GC reclaims the generator.
+        Connection lifetime: a single connection is opened when iteration
+        starts and held open until the generator is exhausted (the `with` block
+        exits on normal completion). Callers MUST either iterate to completion
+        or close the generator explicitly — wrap it in `list(...)` (consumes
+        fully) or `contextlib.closing(...)` (closes on early `break`/`return`).
+        Otherwise an abandoned partial iteration keeps the connection alive
+        until GC reclaims the generator.
         """
         with self._connect() as conn:
             for r in conn.execute(

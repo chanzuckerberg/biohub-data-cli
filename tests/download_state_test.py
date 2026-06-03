@@ -30,6 +30,10 @@ def test_init_fresh_creates_parent_dirs_and_empty_tables(tmp_path: Path) -> None
             ).fetchall()
         }
         assert {"collection_entries", "collection_metadata"} <= names
+        # Exactly one metadata row — mark_listing_complete()'s no-WHERE UPDATE
+        # relies on this singleton invariant.
+        count = conn.execute("SELECT COUNT(*) FROM collection_metadata").fetchone()[0]
+        assert count == 1
         # metadata row was seeded with NULL listing_completed_at.
         row = conn.execute(
             "SELECT listing_completed_at FROM collection_metadata"
