@@ -2,6 +2,7 @@ import functools
 import os
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import click
@@ -37,9 +38,47 @@ _HTTP_MAX_WORKERS = 10
 
 _FIXTURES_DIR_ENV = "DATA_CLI_FIXTURES_DIR"
 
+# Signals a dry run to the backend so it emits a "stats queried" rather than a
+# "download initiated" metric. Must match the header alias the backend reads.
+_DRY_RUN_HEADER = "X-Biohub-Data-Cli-Dry-Run"
 
-def fetch_collection(collection_id: str) -> Collection:
+# Analytics are emitted server-side by the backend when the CLI calls it, so
+# opting out means asking the backend to skip the analytics event for this
+# request. The backend must honor this header (see cellxstate routers/cli.py).
+# The env-var name predates the move to backend-emitted analytics (see PR #10).
+_DISABLE_ANALYTICS_HEADER = "X-Biohub-Data-Cli-Disable-Analytics"
+_DISABLE_ANALYTICS_ENV = "DISABLE_BIOHUB_DATA_CLI_ANALYTICS"
+
+
+def analytics_disabled() -> bool:
+    """Whether the user opted out via $DISABLE_BIOHUB_DATA_CLI_ANALYTICS."""
+    return os.environ.get(_DISABLE_ANALYTICS_ENV, "").strip().lower() == "true"
+
+
+@functools.lru_cache(maxsize=1)
+def _user_agent() -> str:
+    """`biohub-data-cli/<version>` — the backend parses the version from this prefix."""
+    try:
+        cli_version = version("biohub-data-cli")
+    except PackageNotFoundError:
+        # Running from a source tree without installed metadata; the backend
+        # records this as cli_version="unknown" rather than failing the request.
+        cli_version = "unknown"
+    return f"biohub-data-cli/{cli_version}"
+
+
+def fetch_collection(
+    collection_id: str, dry_run: bool = False, analytics: bool = True
+) -> Collection:
     """Fetch a collection by id from the OPS backend's `/v1/cli/collections/{id}`.
+
+    The request carries a `User-Agent: biohub-data-cli/<version>` header so the
+    backend can attribute usage to a CLI version, and — on dry runs — an
+    `X-Biohub-Data-Cli-Dry-Run: true` header so the backend emits a "stats
+    queried" metric instead of a "download initiated" one.
+
+    When `analytics` is False, an `X-Biohub-Data-Cli-Disable-Analytics: true`
+    header asks the backend to skip the analytics event for this request.
 
     $DATA_CLI_FIXTURES_DIR, if set, short-circuits the HTTP call and loads
     `<collection_id>.json` from that directory. Used by integration tests to
@@ -52,9 +91,15 @@ def fetch_collection(collection_id: str) -> Collection:
             raise click.ClickException(f"No fixture for {collection_id} at {path}")
         return Collection.model_validate_json(path.read_text())
 
+    headers = {"User-Agent": _user_agent()}
+    if dry_run:
+        headers[_DRY_RUN_HEADER] = "true"
+    if not analytics:
+        headers[_DISABLE_ANALYTICS_HEADER] = "true"
+
     url = f"{service_url()}/v1/cli/collections/{collection_id}"
     try:
-        response = requests.get(url, timeout=30)
+        response = requests.get(url, timeout=30, headers=headers)
         response.raise_for_status()
         return Collection.model_validate_json(response.content)
     except requests.RequestException as e:
@@ -395,7 +440,10 @@ def download_collection_command(
     if dry_run and yes:
         raise click.UsageError("--dry-run and --yes are mutually exclusive.")
 
-    collections = [fetch_collection(cid) for cid in ids]
+    analytics = not analytics_disabled()
+    collections = [
+        fetch_collection(cid, dry_run=dry_run, analytics=analytics) for cid in ids
+    ]
 
     n_datasets = sum(len(c.datasets) for c in collections)
     if n_datasets == 0:

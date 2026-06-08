@@ -7,11 +7,7 @@ interrupted run can pick up where it left off without re-listing.
 Listings are cached for `LISTING_TTL` (5 days) — bucket contents change, so
 stale entries get nuked rather than blindly trusted.
 
-Concurrency: every method opens a fresh connection. SQLite connections aren't
-thread-safe, but opening is microseconds and the alternative (passing
-thread-local connections around) is more bookkeeping than it's worth at this
-scale. WAL mode is on for the same reason — cheap insurance if we ever do
-write from worker threads.
+Concurrency: none. All DB access happens on the main thread.
 """
 
 import sqlite3
@@ -45,14 +41,18 @@ class CollectionEntry:
     downloaded: bool
 
 
-class DownloadStateDB:
-    """Per-collection resume state.
+@dataclass(frozen=True)
+class DatasetProgress:
+    """Aggregate counts/bytes for one dataset, computed in a single SQL pass."""
 
-    Construct via `for_collection(outdir, collection_slug)` so the conventional
-    path is centralized in one place. `collection_slug` is implicit in the path
-    and intentionally not stored in the schema — the DB is scoped by its file
-    location, nothing else.
-    """
+    total_count: int
+    pending_count: int
+    total_bytes: int
+    done_bytes: int
+
+
+class DownloadStateDB:
+    """Per-collection resume state."""
 
     def __init__(self, path: Path):
         self.path = path
@@ -74,10 +74,8 @@ class DownloadStateDB:
 
     # ── lifecycle ──────────────────────────────────────────────────────
 
-    def _unlink_files(self) -> None:
-        # WAL mode adds `-wal` and `-shm` sidecars; clean all three.
-        for suffix in ("", "-wal", "-shm"):
-            Path(str(self.path) + suffix).unlink(missing_ok=True)
+    def _unlink(self) -> None:
+        self.path.unlink(missing_ok=True)
 
     def exists(self) -> bool:
         return self.path.exists()
@@ -90,37 +88,14 @@ class DownloadStateDB:
         — the caller must call `mark_listing_complete()` once the listing
         loop finishes successfully.
         """
-        self._unlink_files()
+        self._unlink()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            # WAL: readers never block writers and vice-versa. Cheap insurance
-            # if the worker-marking path ever moves off the main thread. Set
-            # once here — it's persisted in the DB header for all later opens.
-            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
             conn.execute(
                 "INSERT INTO collection_metadata (listing_completed_at) VALUES (NULL)"
             )
             conn.commit()
-
-    def delete(self) -> None:
-        """Remove the state DB entirely.
-
-        NOT called on collection success — by design the DB is kept so a
-        re-run within TTL is a fast no-op (`download collection` doesn't
-        re-download succeeded files unless the user passes `--no-resume`).
-        `--no-resume` itself goes through `init_fresh()`, which overwrites in
-        place. This is a teardown helper for callers that genuinely want the
-        state gone; nothing in the download path calls it today.
-
-        Also rmdir's the parent `.biohub-data-cli/` if empty; leaves it alone
-        if a future feature has stored other state there.
-        """
-        self._unlink_files()
-        try:
-            self.path.parent.rmdir()
-        except OSError:
-            pass
 
     # ── listing freshness ──────────────────────────────────────────────
 
@@ -173,33 +148,53 @@ class DownloadStateDB:
             )
             conn.commit()
 
-    def mark_downloaded(self, dataset_slug: str, url: str) -> None:
+    def mark_downloaded(self, dataset_slug: str, url: str, size: int) -> None:
+        """Flag a (dataset, url) as downloaded and record its byte size."""
         with self._connect() as conn:
             conn.execute(
-                "UPDATE collection_entries SET downloaded = 1 "
+                "UPDATE collection_entries SET downloaded = 1, expected_size = ? "
                 "WHERE dataset_slug = ? AND url = ?",
-                (dataset_slug, url),
+                (size, dataset_slug, url),
             )
             conn.commit()
 
-    def iter_entries_for_dataset(self, dataset_slug: str) -> Iterator[CollectionEntry]:
-        """Stream `CollectionEntry` rows for one dataset via cursor iteration.
+    def dataset_progress(self, dataset_slug: str) -> DatasetProgress:
+        """Aggregate one dataset's progress."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT "
+                "COUNT(*), "
+                "COALESCE(SUM(CASE WHEN downloaded = 0 THEN 1 ELSE 0 END), 0), "
+                "COALESCE(SUM(expected_size), 0), "
+                "COALESCE(SUM(CASE WHEN downloaded = 1 THEN expected_size END), 0) "
+                "FROM collection_entries WHERE dataset_slug = ?",
+                (dataset_slug,),
+            ).fetchone()
+        return DatasetProgress(
+            total_count=row[0],
+            pending_count=row[1],
+            total_bytes=row[2],
+            done_bytes=row[3],
+        )
 
-        Generator instead of `fetchall()` so the caller can walk millions of
-        rows (aconcagua: 5M+) without materializing them all — peak memory
-        stays at O(1) rather than O(N × ~150 B/CollectionEntry).
+    def iter_entries_for_dataset(
+        self, dataset_slug: str, *, pending_only: bool = False
+    ) -> Iterator[CollectionEntry]:
+        """Stream `CollectionEntry` rows for one dataset via cursor iteration.
 
         The connection is held open until the iterator is exhausted (the
         `with` block exits on generator return). Consumers should iterate to
         completion or wrap calls in `list(...)`; partial iteration leaves the
         connection alive until GC reclaims the generator.
         """
+        query = (
+            "SELECT dataset_slug, url, expected_size, downloaded "
+            "FROM collection_entries WHERE dataset_slug = ?"
+        )
+        if pending_only:
+            query += " AND downloaded = 0"
         with self._connect() as conn:
-            for r in conn.execute(
-                "SELECT dataset_slug, url, expected_size, downloaded "
-                "FROM collection_entries WHERE dataset_slug = ?",
-                (dataset_slug,),
-            ):
+            for r in conn.execute(query, (dataset_slug,)):
                 yield CollectionEntry(
                     dataset_slug=r[0],
                     url=r[1],
