@@ -54,9 +54,7 @@ markers = [
 ]
 
 [tool.ruff.lint]
-# Default E/F rules plus ANN (flake8-annotations): every function — including
-# test functions and fixtures — must carry parameter and return annotations,
-# enforced via the ruff pre-commit hook.
+# Functions must carry parameter and return annotations.
 extend-select = ["ANN"]
 
 [dependency-groups]

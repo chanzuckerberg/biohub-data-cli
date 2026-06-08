@@ -235,7 +235,9 @@ def test_download_s3_object_success(tmp_path: Path) -> None:
     s3 = MagicMock()
     s3.head_object.return_value = {"ContentLength": 0}
 
-    def fake_download(bucket: str, key: str, dest: str, callback: object) -> None:
+    def fake_download(
+        bucket: str, key: str, dest: str, callback: Callable[[int], None]
+    ) -> None:
         Path(dest).write_bytes(b"")
 
     with (
