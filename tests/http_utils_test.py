@@ -44,7 +44,8 @@ def test_download_http_success(tmp_path):
             _NEVER_CANCEL,
         )
 
-    assert result is None
+    # Success returns the downloaded byte count.
+    assert result == 4
     assert (tmp_path / "file.h5ad").read_bytes() == b"data"
 
 

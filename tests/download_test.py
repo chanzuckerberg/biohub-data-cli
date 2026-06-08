@@ -307,7 +307,7 @@ def test_submit_dataset_downloads_resume_submits_pending_http_when_s3_done(tmp_p
         display = DownloadDisplay()
         _list_and_record("coll", dataset, db, display)
         # Simulate a prior run that finished the S3 object but not the HTTP file.
-        db.mark_downloaded("matrix-a", "s3://bucket/b.h5ad")
+        db.mark_downloaded("matrix-a", "s3://bucket/b.h5ad", size=100)
 
         with (
             ThreadPoolExecutor(max_workers=2) as http_ex,

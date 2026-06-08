@@ -235,7 +235,7 @@ def test_download_s3_object_success(tmp_path):
     s3.head_object.return_value = {"ContentLength": 0}
 
     def fake_download(bucket, key, dest, callback):
-        Path(dest).write_bytes(b"")
+        Path(dest).write_bytes(b"x" * 42)
 
     with (
         patch("biohub_data_cli.utils.s3._make_s3_client", return_value=s3),
@@ -250,7 +250,8 @@ def test_download_s3_object_success(tmp_path):
             _ignore_bytes,
             _NEVER_CANCEL,
         )
-    assert result is None
+    # Success returns the downloaded byte count.
+    assert result == 42
     assert (tmp_path / "prefix" / "file.h5ad").exists()
     mock_transfer.return_value.download_file.assert_called_once_with(
         "bucket",

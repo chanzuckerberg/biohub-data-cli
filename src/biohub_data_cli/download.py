@@ -96,45 +96,27 @@ def submit_dataset_downloads(
     dataset_outdir.mkdir(parents=True, exist_ok=True)
     label = f"{collection_slug}/{dataset.slug}"
 
-    # We trust the `downloaded` flag in the DB — if a row says downloaded=1,
-    # we assume the file is on disk at the right size and skip it.
-    # Alternatively, we can check file size. Not implemented because it involves O(N) stat() syscalls.
-    entries = list(db.iter_entries_for_dataset(dataset.slug))
-    if not entries:
+    # Query from DB instead of statting file size on disk.
+    stats = db.dataset_progress(dataset.slug)
+    if stats.total_count == 0:
         return {}
 
-    # Single pass: byte totals for the progress bar plus the completion flag.
-    done_bytes = 0
-    total_bytes = 0
-    all_downloaded = True
-    for e in entries:
-        size = e.expected_size or 0
-        total_bytes += size
-        if e.downloaded:
-            done_bytes += size
-        else:
-            all_downloaded = False
-
-    if all_downloaded:
-        # Everything is on disk already — show a completed bar without
-        # submitting any work.
+    if stats.pending_count == 0:
         display.progress.add_task(
-            escape(label), total=total_bytes or None, completed=done_bytes
+            escape(label), total=stats.total_bytes or None, completed=stats.done_bytes
         )
         return {}
 
     task_id = display.progress.add_task(
         escape(label),
-        total=total_bytes or None,
-        completed=done_bytes,
+        total=stats.total_bytes or None,
+        completed=stats.done_bytes,
     )
     on_bytes_downloaded = functools.partial(display.advance_task, task_id)
     on_size_known = functools.partial(display.grow_task_total, task_id)
 
     future_to_url: dict[Future, str] = {}
-    for entry in entries:
-        if entry.downloaded:
-            continue
+    for entry in list(db.iter_entries_for_dataset(dataset.slug, pending_only=True)):
         if entry.url.startswith("s3://"):
             fut = s3_pool.submit(
                 download_s3_object,
@@ -157,9 +139,7 @@ def submit_dataset_downloads(
                 cancel,
             )
         else:
-            # Shouldn't reach here — `_list_and_record` filters unknown-scheme
-            # URLs at listing time and emits them as DownloadFailures. Skip
-            # defensively rather than crash if the DB somehow has one.
+            # Shouldn't reach here. Skip defensively.
             continue
         future_to_url[fut] = entry.url
 
@@ -290,8 +270,7 @@ def download_collections(
     cancel = threading.Event()
     kbi: KeyboardInterrupt | None = None
 
-    # Pre-decide which collections can reuse their cached listing. Doing this
-    # before the Live region takes over lets us show one summary line up top.
+    # Pre-decide which collections can reuse their cached listing
     collection_dbs: dict[str, DownloadStateDB] = {}
     cached_collections: set[str] = set()
     for collection in collections:
@@ -317,8 +296,6 @@ def download_collections(
         ThreadPoolExecutor(max_workers=S3_MAX_WORKERS) as s3_pool,
     ):
         # Phase 1: ensure every collection has a fresh listing in its DB.
-        # Cached collections are skipped — their DB already has authoritative
-        # entries within TTL.
         for collection in collections:
             if collection.slug in cached_collections:
                 continue
@@ -326,8 +303,7 @@ def download_collections(
                 collection, collection_dbs[collection.slug], display
             )
 
-        # Phase 2: submit pending downloads. By this point every DB is
-        # authoritative, so this loop just asks the DB what's still missing.
+        # Phase 2: submit pending downloads.
         for collection in collections:
             collection_db = collection_dbs[collection.slug]
             for dataset in collection.datasets:
@@ -355,10 +331,10 @@ def download_collections(
             for future in as_completed(all_futures):
                 result = future.result()
                 coll_slug, ds_slug, url = future_keys[future]
-                if result is None:
-                    collection_dbs[coll_slug].mark_downloaded(ds_slug, url)
-                else:
+                if isinstance(result, DownloadFailure):
                     display.record_failure(result)
+                else:
+                    collection_dbs[coll_slug].mark_downloaded(ds_slug, url, size=result)
         except KeyboardInterrupt as e:
             cancel.set()
             # Rich Live with transient=False lets console.print insert above

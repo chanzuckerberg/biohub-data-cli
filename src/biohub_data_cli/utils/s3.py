@@ -337,8 +337,10 @@ def download_s3_object(
     dataset_slug: str,
     on_bytes_downloaded: Callable[[int], None],
     cancel: threading.Event,
-) -> DownloadFailure | None:
+) -> DownloadFailure | int:
     """Download a single S3 object into outdir, preserving the full S3 key structure.
+
+    On success returns the downloaded file's size in bytes; on failure returns a `DownloadFailure`.
 
     No `on_size_known` callback here — S3 sizes are already accumulated into
     the task total at `expand_s3_location` time (from `list_objects_v2` /
@@ -366,7 +368,7 @@ def download_s3_object(
         )
         S3Transfer(s3, cfg).download_file(bucket, key, str(tmp), callback=callback)
         tmp.replace(outpath)
-        return None
+        return outpath.stat().st_size
     except (BotoCoreError, ClientError, OSError) as e:
         tmp.unlink(missing_ok=True)
         return DownloadFailure(
