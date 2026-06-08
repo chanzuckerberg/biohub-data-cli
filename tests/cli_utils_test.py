@@ -1,4 +1,5 @@
 import threading
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -14,27 +15,27 @@ from biohub_data_cli.utils.cli import (
 # ── safe_join ────────────────────────────────────────────────────────────────
 
 
-def test_safe_join_nested_subdirectories(tmp_path):
+def test_safe_join_nested_subdirectories(tmp_path: Path) -> None:
     result = safe_join(tmp_path, "a", "b", "c.txt")
     assert result == (tmp_path / "a" / "b" / "c.txt").resolve()
 
 
-def test_safe_join_single_filename(tmp_path):
+def test_safe_join_single_filename(tmp_path: Path) -> None:
     result = safe_join(tmp_path, "file.h5ad")
     assert result == (tmp_path / "file.h5ad").resolve()
 
 
-def test_safe_join_rejects_parent_traversal(tmp_path):
+def test_safe_join_rejects_parent_traversal(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="escapes"):
         safe_join(tmp_path, "..", "etc", "passwd")
 
 
-def test_safe_join_rejects_embedded_parent_traversal(tmp_path):
+def test_safe_join_rejects_embedded_parent_traversal(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="escapes"):
         safe_join(tmp_path, "a", "..", "..", "etc")
 
 
-def test_safe_join_rejects_absolute_component(tmp_path):
+def test_safe_join_rejects_absolute_component(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="escapes"):
         safe_join(tmp_path, "/etc/passwd")
 
@@ -53,7 +54,7 @@ def _failure(
     )
 
 
-def test_record_failure_appends_to_failures_list():
+def test_record_failure_appends_to_failures_list() -> None:
     d = DownloadDisplay()
     f1 = _failure(ds="ds-1")
     f2 = _failure(ds="ds-2")
@@ -62,7 +63,7 @@ def test_record_failure_appends_to_failures_list():
     assert d.failures == [f1, f2]
 
 
-def test_first_failure_swaps_live_renderable_to_include_tree():
+def test_first_failure_swaps_live_renderable_to_include_tree() -> None:
     """Tree is hidden until the first failure; then live.update swaps to Group(progress, tree)."""
     d = DownloadDisplay()
     with patch.object(d._live, "update") as mock_update:
@@ -75,7 +76,7 @@ def test_first_failure_swaps_live_renderable_to_include_tree():
         assert d._tree in passed.renderables
 
 
-def test_subsequent_failures_do_not_re_swap_live_renderable():
+def test_subsequent_failures_do_not_re_swap_live_renderable() -> None:
     """Only the FIRST failure triggers live.update; later failures just mutate the tree."""
     d = DownloadDisplay()
     with patch.object(d._live, "update") as mock_update:
@@ -85,7 +86,7 @@ def test_subsequent_failures_do_not_re_swap_live_renderable():
         assert mock_update.call_count == 1
 
 
-def test_failures_in_same_collection_share_a_branch():
+def test_failures_in_same_collection_share_a_branch() -> None:
     d = DownloadDisplay()
     d.record_failure(_failure(coll="coll-a", ds="ds-1"))
     d.record_failure(_failure(coll="coll-a", ds="ds-2"))
@@ -93,7 +94,7 @@ def test_failures_in_same_collection_share_a_branch():
     assert list(d._collection_branches) == ["coll-a"]
 
 
-def test_failures_in_same_dataset_share_a_sub_branch():
+def test_failures_in_same_dataset_share_a_sub_branch() -> None:
     d = DownloadDisplay()
     d.record_failure(_failure(coll="coll-a", ds="ds-1", url="u1"))
     d.record_failure(_failure(coll="coll-a", ds="ds-1", url="u2"))
@@ -103,14 +104,14 @@ def test_failures_in_same_dataset_share_a_sub_branch():
     assert len(ds_branch.children) == 2
 
 
-def test_different_collections_get_separate_branches():
+def test_different_collections_get_separate_branches() -> None:
     d = DownloadDisplay()
     d.record_failure(_failure(coll="coll-a"))
     d.record_failure(_failure(coll="coll-b"))
     assert set(d._collection_branches) == {"coll-a", "coll-b"}
 
 
-def test_leaf_label_contains_url_and_reason():
+def test_leaf_label_contains_url_and_reason() -> None:
     d = DownloadDisplay()
     d.record_failure(_failure(url="s3://bucket/key", reason="403 Forbidden"))
     ds_branch = d._dataset_branches[("coll-a", "ds-1")]
@@ -119,7 +120,7 @@ def test_leaf_label_contains_url_and_reason():
     assert "403 Forbidden" in leaf_label
 
 
-def test_failure_fields_with_rich_markup_characters_render_literally():
+def test_failure_fields_with_rich_markup_characters_render_literally() -> None:
     """Brackets in error messages (e.g. '[Errno 13]') must not be parsed as rich markup."""
     d = DownloadDisplay()
     d.record_failure(
@@ -150,7 +151,7 @@ def test_failure_fields_with_rich_markup_characters_render_literally():
 # ── DownloadDisplay.advance_task / DownloadDisplay.grow_task_total ──────────
 
 
-def test_advance_task_bumps_completed():
+def test_advance_task_bumps_completed() -> None:
     d = DownloadDisplay()
     task_id = d.progress.add_task("t", total=100)
     d.advance_task(task_id, 30)
@@ -159,7 +160,7 @@ def test_advance_task_bumps_completed():
     assert task.completed == 70
 
 
-def test_grow_task_total_adds_to_existing_total():
+def test_grow_task_total_adds_to_existing_total() -> None:
     """Used when an HTTP worker learns Content-Length after the task is created."""
     d = DownloadDisplay()
     task_id = d.progress.add_task("t", total=1000)  # seeded from S3 sizes
@@ -168,7 +169,7 @@ def test_grow_task_total_adds_to_existing_total():
     assert task.total == 1250
 
 
-def test_grow_task_total_starts_from_none():
+def test_grow_task_total_starts_from_none() -> None:
     """If the task was created with total=None (no known size), grow from 0."""
     d = DownloadDisplay()
     task_id = d.progress.add_task("t", total=None)
@@ -177,7 +178,7 @@ def test_grow_task_total_starts_from_none():
     assert task.total == 500
 
 
-def test_grow_task_total_is_thread_safe_under_concurrent_workers():
+def test_grow_task_total_is_thread_safe_under_concurrent_workers() -> None:
     """Many HTTP workers reporting Content-Length at once must not lose updates."""
     d = DownloadDisplay()
     task_id = d.progress.add_task("t", total=0)
@@ -185,7 +186,7 @@ def test_grow_task_total_is_thread_safe_under_concurrent_workers():
     per_thread = 1000
     start = threading.Event()
 
-    def worker():
+    def worker() -> None:
         start.wait()
         d.grow_task_total(task_id, per_thread)
 
