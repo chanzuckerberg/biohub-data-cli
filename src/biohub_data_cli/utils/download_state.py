@@ -74,7 +74,7 @@ class DownloadStateDB:
 
     # ── lifecycle ──────────────────────────────────────────────────────
 
-    def _unlink_files(self) -> None:
+    def _unlink(self) -> None:
         self.path.unlink(missing_ok=True)
 
     def exists(self) -> bool:
@@ -88,7 +88,7 @@ class DownloadStateDB:
         — the caller must call `mark_listing_complete()` once the listing
         loop finishes successfully.
         """
-        self._unlink_files()
+        self._unlink()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
