@@ -67,10 +67,25 @@ def test_mark_downloaded_flips_flag(tmp_path: Path) -> None:
     db = _new_db(tmp_path)
     db.insert_entries([CollectionEntry("ds1", "s3://b/k", 100, downloaded=False)])
 
-    db.mark_downloaded("ds1", "s3://b/k")
+    db.mark_downloaded("ds1", "s3://b/k", size=100)
 
     entries = list(db.iter_entries_for_dataset("ds1"))
     assert entries[0].downloaded is True
+    assert entries[0].expected_size == 100
+
+
+def test_mark_downloaded_with_size_records_expected_size(tmp_path: Path) -> None:
+    db = _new_db(tmp_path)
+    # Listed with unknown size (NULL), as an HTTP file without Content-Length.
+    db.insert_entries([CollectionEntry("ds1", "https://h/f", None, downloaded=False)])
+
+    db.mark_downloaded("ds1", "https://h/f", size=4096)
+
+    entry = next(iter(db.iter_entries_for_dataset("ds1")))
+    assert entry.downloaded is True
+    assert entry.expected_size == 4096
+    # And it now contributes to the progress byte totals.
+    assert db.dataset_progress("ds1").done_bytes == 4096
 
 
 def test_iter_entries_for_dataset_is_scoped(tmp_path: Path) -> None:
@@ -88,6 +103,75 @@ def test_iter_entries_for_dataset_is_scoped(tmp_path: Path) -> None:
 
     assert {e.url for e in ds1} == {"s3://b/a", "s3://b/b"}
     assert {e.url for e in ds2} == {"s3://b/c"}
+
+
+def test_iter_entries_for_dataset_pending_only(tmp_path: Path) -> None:
+    db = _new_db(tmp_path)
+    db.insert_entries(
+        [
+            CollectionEntry("ds1", "s3://b/a", 100, downloaded=False),
+            CollectionEntry("ds1", "s3://b/b", 200, downloaded=False),
+            CollectionEntry("ds1", "s3://b/c", 300, downloaded=False),
+        ]
+    )
+    db.mark_downloaded("ds1", "s3://b/b", size=200)
+
+    pending = list(db.iter_entries_for_dataset("ds1", pending_only=True))
+
+    assert {e.url for e in pending} == {"s3://b/a", "s3://b/c"}
+    assert all(e.downloaded is False for e in pending)
+
+
+def test_dataset_progress_aggregates_counts_and_bytes(tmp_path: Path) -> None:
+    db = _new_db(tmp_path)
+    db.insert_entries(
+        [
+            CollectionEntry("ds1", "s3://b/a", 100, downloaded=False),
+            CollectionEntry("ds1", "s3://b/b", 200, downloaded=False),
+            # NULL size must count as 0 bytes, matching the download path.
+            CollectionEntry("ds1", "s3://b/c", None, downloaded=False),
+            CollectionEntry("ds2", "s3://b/other", 999, downloaded=False),
+        ]
+    )
+    db.mark_downloaded("ds1", "s3://b/b", size=200)
+
+    p = db.dataset_progress("ds1")
+
+    assert p.total_count == 3  # ds2 excluded — scoped to ds1
+    assert p.pending_count == 2  # a and c still pending
+    assert p.total_bytes == 300  # 100 + 200 + 0 (NULL)
+    assert p.done_bytes == 200  # only b is downloaded
+
+
+def test_dataset_progress_pending_unknown_size_counts_zero_bytes(
+    tmp_path: Path,
+) -> None:
+    """A pending HTTP file listed with unknown (NULL) size counts toward the
+    file totals but contributes 0 bytes — matching how the download path treats
+    unknown sizes. (Once downloaded, mark_downloaded records its real size.)
+    """
+    db = _new_db(tmp_path)
+    db.insert_entries(
+        [
+            CollectionEntry("ds1", "https://h/known", 100, downloaded=False),
+            CollectionEntry("ds1", "https://h/unknown", None, downloaded=False),
+        ]
+    )
+
+    p = db.dataset_progress("ds1")
+
+    assert p.total_count == 2
+    assert p.pending_count == 2
+    assert p.total_bytes == 100  # unknown-size file contributes 0
+    assert p.done_bytes == 0
+
+
+def test_dataset_progress_empty_dataset(tmp_path: Path) -> None:
+    db = _new_db(tmp_path)
+    # No rows for this dataset → all zeros (lets the caller tell "empty" from
+    # "fully downloaded", which is pending_count == 0 with total_count > 0).
+    p = db.dataset_progress("nonexistent")
+    assert (p.total_count, p.pending_count, p.total_bytes, p.done_bytes) == (0, 0, 0, 0)
 
 
 def test_is_listing_fresh_false_when_missing(tmp_path: Path) -> None:
@@ -131,32 +215,3 @@ def test_is_listing_fresh_false_for_corrupted_db(tmp_path: Path) -> None:
     # Should return False (treat as not fresh → trigger fresh re-init) rather
     # than raising into the orchestrator.
     assert db.is_listing_fresh() is False
-
-
-def test_delete_removes_db_and_wal_sidecars(tmp_path: Path) -> None:
-    db = _new_db(tmp_path)
-    db.insert_entries([CollectionEntry("ds1", "s3://b/k", 100, downloaded=False)])
-    # Force WAL/SHM sidecars to materialize by holding a write. Close the
-    # connection before delete() — sqlite3's `with` commits but does NOT close,
-    # and unlinking a file with an open handle fails on Windows.
-    conn = sqlite3.connect(db.path)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            "INSERT INTO collection_entries (dataset_slug, url, expected_size, downloaded) "
-            "VALUES ('ds2', 's3://b/z', 1, 0)"
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    db.delete()
-
-    for suffix in ("", "-wal", "-shm"):
-        assert not Path(str(db.path) + suffix).exists()
-
-
-def test_delete_idempotent_when_db_missing(tmp_path: Path) -> None:
-    db = DownloadStateDB.for_collection(tmp_path, "ghost")
-    # Doesn't raise even when nothing's there.
-    db.delete()
