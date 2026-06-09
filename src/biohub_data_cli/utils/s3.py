@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import boto3
 from boto3.s3.transfer import S3Transfer, TransferConfig
 from botocore import UNSIGNED
+from botocore.client import BaseClient
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -175,7 +176,7 @@ def print_s3_debug_summary_if_enabled() -> None:
 
 
 @functools.cache
-def _make_s3_client():
+def _make_s3_client() -> BaseClient:
     # Cached so all workers share one client (boto3 clients are thread-safe).
     # Constructing a fresh client per call adds non-trivial overhead when
     # downloading many small objects (e.g. Zarr chunks).

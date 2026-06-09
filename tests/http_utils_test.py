@@ -1,4 +1,5 @@
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from biohub_data_cli.utils.http import download_http, http_url_to_local_path
@@ -14,19 +15,19 @@ def _ignore_size(_: int) -> None: ...
 _NEVER_CANCEL = threading.Event()
 
 
-def test_http_url_to_local_path(tmp_path):
+def test_http_url_to_local_path(tmp_path: Path) -> None:
     result = http_url_to_local_path("https://example.com/dir1/dir2/data.h5ad", tmp_path)
     assert result == tmp_path / "data.h5ad"
 
 
-def test_http_url_to_local_path_url_decodes_filename(tmp_path):
+def test_http_url_to_local_path_url_decodes_filename(tmp_path: Path) -> None:
     result = http_url_to_local_path(
         "https://example.com/dir/file%20name.h5ad", tmp_path
     )
     assert result == tmp_path / "file name.h5ad"
 
 
-def test_download_http_success(tmp_path):
+def test_download_http_success(tmp_path: Path) -> None:
     mock_response = MagicMock()
     mock_response.headers = {"Content-Length": "4"}
     mock_response.iter_content.return_value = [b"data"]
@@ -49,7 +50,7 @@ def test_download_http_success(tmp_path):
     assert (tmp_path / "file.h5ad").read_bytes() == b"data"
 
 
-def test_download_http_records_failure(tmp_path):
+def test_download_http_records_failure(tmp_path: Path) -> None:
     with patch(
         "biohub_data_cli.utils.http.requests.get", side_effect=OSError("timeout")
     ):
@@ -69,7 +70,7 @@ def test_download_http_records_failure(tmp_path):
     assert "timeout" in result.reason
 
 
-def test_download_http_calls_on_size_known_from_content_length(tmp_path):
+def test_download_http_calls_on_size_known_from_content_length(tmp_path: Path) -> None:
     """Worker reports the file size to the orchestrator via on_size_known."""
     mock_response = MagicMock()
     mock_response.headers = {"Content-Length": "1024"}
@@ -92,7 +93,9 @@ def test_download_http_calls_on_size_known_from_content_length(tmp_path):
     assert sizes_reported == [1024]
 
 
-def test_download_http_skips_on_size_known_without_content_length(tmp_path):
+def test_download_http_skips_on_size_known_without_content_length(
+    tmp_path: Path,
+) -> None:
     """Servers omitting Content-Length (chunked transfer) shouldn't crash us."""
     mock_response = MagicMock()
     mock_response.headers = {}
@@ -115,7 +118,7 @@ def test_download_http_skips_on_size_known_without_content_length(tmp_path):
     assert sizes_reported == []
 
 
-def test_download_http_records_failure_for_unresolvable_url(tmp_path):
+def test_download_http_records_failure_for_unresolvable_url(tmp_path: Path) -> None:
     result = download_http(
         "https://example.com/",
         tmp_path,
@@ -133,7 +136,7 @@ def test_download_http_records_failure_for_unresolvable_url(tmp_path):
     assert "filename" in result.reason
 
 
-def test_download_http_cancels_mid_stream_and_cleans_part_file(tmp_path):
+def test_download_http_cancels_mid_stream_and_cleans_part_file(tmp_path: Path) -> None:
     """When the cancel event is set, the worker exits at the next chunk and
     unlinks the .part file — no half-written file left at the final path."""
     cancel = threading.Event()

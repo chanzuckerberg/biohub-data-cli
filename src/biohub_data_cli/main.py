@@ -4,7 +4,7 @@ from biohub_data_cli.download import download_group
 
 
 @click.group()
-def cli():
+def cli() -> None:
     """Biohub data CLI.
 
     \b

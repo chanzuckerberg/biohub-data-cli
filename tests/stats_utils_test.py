@@ -32,20 +32,20 @@ def _collection_with_sizes(sizes: list[int | None]) -> Collection:
 # ── estimate_size_summary ───────────────────────────────────────────────────
 
 
-def test_estimate_size_summary_all_sized():
+def test_estimate_size_summary_all_sized() -> None:
     """1024 + 512 = 1536 B → '1.5 kB' via rich.filesize.decimal."""
     result = estimate_size_summary([_collection_with_sizes([1024, 512])])
     assert "estimated" in result
     assert "1.5" in result
 
 
-def test_estimate_size_summary_partial_sizing():
+def test_estimate_size_summary_partial_sizing() -> None:
     result = estimate_size_summary([_collection_with_sizes([1024, None])])
     assert "estimated" in result
     assert "size unknown for 1/2 dataset(s)" in result
 
 
-def test_estimate_size_summary_all_unsized():
+def test_estimate_size_summary_all_unsized() -> None:
     result = estimate_size_summary([_collection_with_sizes([None, None])])
     assert result == "size unknown"
 
@@ -53,7 +53,7 @@ def test_estimate_size_summary_all_unsized():
 # ── get_collections_stats ───────────────────────────────────────────────────
 
 
-def test_get_collections_stats_aggregates_per_dataset():
+def test_get_collections_stats_aggregates_per_dataset() -> None:
     """One DatasetStats row per dataset, total_bytes summed across S3 URIs."""
     coll = Collection.model_validate(
         {
@@ -99,7 +99,7 @@ def test_get_collections_stats_aggregates_per_dataset():
     assert rows[1].total_bytes == 50
 
 
-def test_get_collections_stats_silently_skips_http_urls():
+def test_get_collections_stats_silently_skips_http_urls() -> None:
     """HTTP URLs are not sized in dry-run; only s3:// URIs contribute."""
     coll = Collection.model_validate(
         {
@@ -132,7 +132,7 @@ def test_get_collections_stats_silently_skips_http_urls():
     assert rows[0].n_failed_uris == 0
 
 
-def test_get_collections_stats_prefers_be_size_over_listing():
+def test_get_collections_stats_prefers_be_size_over_listing() -> None:
     """When `file_size_bytes` is set, use it directly and skip S3 listing."""
     coll = Collection.model_validate(
         {
@@ -162,7 +162,7 @@ def test_get_collections_stats_prefers_be_size_over_listing():
     assert rows[0].n_http_urls_skipped == 0
 
 
-def test_get_collections_stats_be_size_zero_is_respected():
+def test_get_collections_stats_be_size_zero_is_respected() -> None:
     """`file_size_bytes == 0` is a valid BE answer and must not trigger listing."""
     coll = Collection.model_validate(
         {
@@ -189,7 +189,7 @@ def test_get_collections_stats_be_size_zero_is_respected():
     assert rows[0].n_failed_uris == 0
 
 
-def test_get_collections_stats_be_size_suppresses_http_skipped_warning():
+def test_get_collections_stats_be_size_suppresses_http_skipped_warning() -> None:
     """BE size is assumed to cover HTTP URLs too — don't flag them as skipped."""
     coll = Collection.model_validate(
         {
@@ -219,7 +219,7 @@ def test_get_collections_stats_be_size_suppresses_http_skipped_warning():
     assert rows[0].n_http_urls_skipped == 0
 
 
-def test_get_collections_stats_mixed_be_size_and_listing_fallback():
+def test_get_collections_stats_mixed_be_size_and_listing_fallback() -> None:
     """Per-dataset decision: sized datasets skip listing, unsized ones list."""
     coll = Collection.model_validate(
         {
@@ -255,7 +255,7 @@ def test_get_collections_stats_mixed_be_size_and_listing_fallback():
     assert rows[1].total_bytes == 250
 
 
-def test_get_collections_stats_counts_failed_uris_as_partial():
+def test_get_collections_stats_counts_failed_uris_as_partial() -> None:
     coll = Collection.model_validate(
         {
             "id": "c",
@@ -272,7 +272,7 @@ def test_get_collections_stats_counts_failed_uris_as_partial():
         }
     )
 
-    def expand(uri, **_kw):
+    def expand(uri: str, **_kw: object) -> list[tuple[str, int]]:
         if uri == "s3://b/bad":
             raise RuntimeError("listing failed")
         return [("s3://b/good/file", 500)]
@@ -288,7 +288,7 @@ def test_get_collections_stats_counts_failed_uris_as_partial():
 # ── aggregate_dry_run_stats ─────────────────────────────────────────────────
 
 
-def test_aggregate_counts_http_urls_skipped():
+def test_aggregate_counts_http_urls_skipped() -> None:
     """Any http:// or https:// URL counts toward n_http_urls_skipped."""
     coll = Collection.model_validate(
         {
@@ -322,7 +322,7 @@ def test_aggregate_counts_http_urls_skipped():
     assert agg.n_failed_uris == 0
 
 
-def test_aggregate_no_http_urls_skipped_when_s3_only():
+def test_aggregate_no_http_urls_skipped_when_s3_only() -> None:
     coll = Collection.model_validate(
         {
             "id": "c",

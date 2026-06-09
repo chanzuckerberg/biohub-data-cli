@@ -54,7 +54,7 @@ class DatasetProgress:
 class DownloadStateDB:
     """Per-collection resume state."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = path
 
     @classmethod

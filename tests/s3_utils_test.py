@@ -1,4 +1,5 @@
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 from unittest.mock import ANY, MagicMock, patch
@@ -68,7 +69,7 @@ class ReturnCase(NamedTuple):
     head_called_with: str | None  # None means HEAD must not be called
 
 
-def test_expand_s3_location_returns():
+def test_expand_s3_location_returns() -> None:
     cases = [
         ReturnCase(
             id="single_file_head_wins",
@@ -157,7 +158,7 @@ class RaisesCase(NamedTuple):
     head_should_be_called: bool
 
 
-def test_expand_s3_location_raises():
+def test_expand_s3_location_raises() -> None:
     cases = [
         RaisesCase(
             id="head_404",
@@ -225,16 +226,18 @@ def test_expand_s3_location_raises():
             assert not s3.head_object.called, f"[{case.id}] HEAD should not be called"
 
 
-def test_s3_url_to_local_path_preserves_key_structure(tmp_path):
+def test_s3_url_to_local_path_preserves_key_structure(tmp_path: Path) -> None:
     result = s3_url_to_local_path("s3://bucket/dir1/dir2/file.h5ad", tmp_path)
     assert result == tmp_path / "dir1" / "dir2" / "file.h5ad"
 
 
-def test_download_s3_object_success(tmp_path):
+def test_download_s3_object_success(tmp_path: Path) -> None:
     s3 = MagicMock()
     s3.head_object.return_value = {"ContentLength": 0}
 
-    def fake_download(bucket, key, dest, callback):
+    def fake_download(
+        bucket: str, key: str, dest: str, callback: Callable[[int], None]
+    ) -> None:
         Path(dest).write_bytes(b"x" * 42)
 
     with (
@@ -261,7 +264,7 @@ def test_download_s3_object_success(tmp_path):
     )
 
 
-def test_download_s3_object_records_failure(tmp_path):
+def test_download_s3_object_records_failure(tmp_path: Path) -> None:
     with patch("biohub_data_cli.utils.s3.S3Transfer") as mock_transfer:
         mock_transfer.return_value.download_file.side_effect = OSError("Access denied")
         result = download_s3_object(
@@ -280,14 +283,16 @@ def test_download_s3_object_records_failure(tmp_path):
 
 
 def test_download_s3_object_cancels_via_progress_callback_and_cleans_part_file(
-    tmp_path,
-):
+    tmp_path: Path,
+) -> None:
     """When the cancel event is set, the per-chunk callback raises, S3Transfer
     propagates it, the existing handler unlinks the .part file."""
     cancel = threading.Event()
     cancel.set()
 
-    def fake_download(bucket, key, dest, callback):
+    def fake_download(
+        bucket: str, key: str, dest: str, callback: Callable[[int], None]
+    ) -> None:
         Path(dest).write_bytes(b"partial")  # simulate mid-stream write
         callback(7)  # this should raise because cancel is set
 
@@ -311,7 +316,7 @@ def test_download_s3_object_cancels_via_progress_callback_and_cleans_part_file(
     assert not (tmp_path / "prefix" / "file.h5ad.part").exists()
 
 
-def test_expand_s3_location_reports_listing_progress_per_page():
+def test_expand_s3_location_reports_listing_progress_per_page() -> None:
     """on_listing_progress fires once per LIST page with cumulative counts.
 
     Directory markers (keys ending in '/') don't count toward objects or bytes.
@@ -338,7 +343,7 @@ def test_expand_s3_location_reports_listing_progress_per_page():
 # ── resolve_s3_uris ─────────────────────────────────────────────────────────
 
 
-def test_resolve_s3_uris_returns_expanded_objects_and_no_failures():
+def test_resolve_s3_uris_returns_expanded_objects_and_no_failures() -> None:
     with patch(
         "biohub_data_cli.utils.s3.expand_s3_location",
         side_effect=lambda uri, **_kw: [(f"{uri}/a", 100), (f"{uri}/b", 200)],
@@ -354,10 +359,10 @@ def test_resolve_s3_uris_returns_expanded_objects_and_no_failures():
     ]
 
 
-def test_resolve_s3_uris_attributes_listing_failures_and_continues():
+def test_resolve_s3_uris_attributes_listing_failures_and_continues() -> None:
     """A failing URI becomes a DownloadFailure; remaining URIs still resolve."""
 
-    def expand(uri, **_kw):
+    def expand(uri: str, **_kw: object) -> list[tuple[str, int]]:
         if uri == "s3://b/bad":
             raise RuntimeError("listing failed: access denied")
         return [(f"{uri}/file", 50)]
