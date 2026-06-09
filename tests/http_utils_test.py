@@ -45,8 +45,9 @@ def test_download_http_success(tmp_path: Path) -> None:
             _NEVER_CANCEL,
         )
 
-    # Success returns the downloaded byte count.
-    assert result == 4
+    # Success carries the downloaded byte count.
+    assert result.ok
+    assert result.size == 4
     assert (tmp_path / "file.h5ad").read_bytes() == b"data"
 
 
@@ -64,10 +65,10 @@ def test_download_http_records_failure(tmp_path: Path) -> None:
             _NEVER_CANCEL,
         )
 
-    assert result is not None
-    assert result.collection_slug == "my-coll"
-    assert result.dataset_slug == "my-ds"
-    assert "timeout" in result.reason
+    assert not result.ok
+    assert result.failure.collection_slug == "my-coll"
+    assert result.failure.dataset_slug == "my-ds"
+    assert "timeout" in result.failure.reason
 
 
 def test_download_http_calls_on_size_known_from_content_length(tmp_path: Path) -> None:
@@ -129,11 +130,11 @@ def test_download_http_records_failure_for_unresolvable_url(tmp_path: Path) -> N
         _NEVER_CANCEL,
     )
 
-    assert result is not None
-    assert result.collection_slug == "my-coll"
-    assert result.dataset_slug == "my-ds"
-    assert result.url == "https://example.com/"
-    assert "filename" in result.reason
+    assert not result.ok
+    assert result.failure.collection_slug == "my-coll"
+    assert result.failure.dataset_slug == "my-ds"
+    assert result.failure.url == "https://example.com/"
+    assert "filename" in result.failure.reason
 
 
 def test_download_http_cancels_mid_stream_and_cleans_part_file(tmp_path: Path) -> None:
@@ -159,7 +160,7 @@ def test_download_http_cancels_mid_stream_and_cleans_part_file(tmp_path: Path) -
             cancel,
         )
 
-    assert result is not None
-    assert "cancelled" in result.reason
+    assert not result.ok
+    assert "cancelled" in result.failure.reason
     assert not (tmp_path / "file.h5ad").exists()
     assert not (tmp_path / "file.h5ad.part").exists()

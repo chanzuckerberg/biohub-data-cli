@@ -253,8 +253,9 @@ def test_download_s3_object_success(tmp_path: Path) -> None:
             _ignore_bytes,
             _NEVER_CANCEL,
         )
-    # Success returns the downloaded byte count.
-    assert result == 42
+    # Success carries the downloaded byte count.
+    assert result.ok
+    assert result.size == 42
     assert (tmp_path / "prefix" / "file.h5ad").exists()
     mock_transfer.return_value.download_file.assert_called_once_with(
         "bucket",
@@ -275,11 +276,11 @@ def test_download_s3_object_records_failure(tmp_path: Path) -> None:
             _ignore_bytes,
             _NEVER_CANCEL,
         )
-    assert result is not None
-    assert "file.h5ad" in result.url
-    assert result.collection_slug == "my-coll"
-    assert result.dataset_slug == "my-ds"
-    assert "Access denied" in result.reason
+    assert not result.ok
+    assert "file.h5ad" in result.failure.url
+    assert result.failure.collection_slug == "my-coll"
+    assert result.failure.dataset_slug == "my-ds"
+    assert "Access denied" in result.failure.reason
 
 
 def test_download_s3_object_cancels_via_progress_callback_and_cleans_part_file(
@@ -310,8 +311,8 @@ def test_download_s3_object_cancels_via_progress_callback_and_cleans_part_file(
             cancel,
         )
 
-    assert result is not None
-    assert "cancelled" in result.reason
+    assert not result.ok
+    assert "cancelled" in result.failure.reason
     assert not (tmp_path / "prefix" / "file.h5ad").exists()
     assert not (tmp_path / "prefix" / "file.h5ad.part").exists()
 

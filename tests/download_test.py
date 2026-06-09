@@ -24,7 +24,7 @@ from biohub_data_cli.utils.cli import DownloadDisplay
 from biohub_data_cli.utils.download_state import DownloadStateDB
 from biohub_data_cli.utils.http import download_http
 from biohub_data_cli.main import cli
-from biohub_data_cli.models import Collection, Dataset, DownloadFailure
+from biohub_data_cli.models import Collection, Dataset, DownloadFailure, DownloadResult
 
 # Never-set event for tests that don't exercise the cancel path.
 _NEVER_CANCEL = threading.Event()
@@ -395,7 +395,9 @@ def test_submit_dataset_downloads_routes_and_collects_submission_failures(
     mock_s3.assert_called_once()
 
 
-def test_submit_dataset_downloads_resume_submits_pending_http_when_s3_done(tmp_path):
+def test_submit_dataset_downloads_resume_submits_pending_http_when_s3_done(
+    tmp_path: Path,
+) -> None:
     """Mixed S3+HTTP dataset: if the S3 objects are already marked downloaded
     but the HTTP file is not, resume must still submit the HTTP download.
 
@@ -483,6 +485,11 @@ def test_submit_dataset_downloads_unknown_scheme(tmp_path: Path) -> None:
     assert futures == {}
     assert len(listing_failures) == 1
     assert "Unsupported URL scheme" in listing_failures[0].reason
+    # The real invariant the submit loop relies on: _list_and_record never
+    # inserts an unknown-scheme URL into the DB, so the loop only ever sees
+    # s3/http. This guards the removal of the old defensive `else` branch —
+    # if an unknown scheme leaked into the DB it would be submitted as http.
+    assert list(db.iter_entries_for_dataset(dataset.slug)) == []
 
 
 def test_submit_dataset_downloads_submits_every_expanded_s3_object(
@@ -583,7 +590,9 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(
     assert "listing failed" in failure.reason
 
 
-def test_ensure_collection_listed_marks_fresh_when_all_datasets_list_cleanly(tmp_path):
+def test_ensure_collection_listed_marks_fresh_when_all_datasets_list_cleanly(
+    tmp_path: Path,
+) -> None:
     """Happy path: every dataset lists without error, so the listing is
     cacheable and a resume run can trust it."""
     collection = Collection.model_validate(
@@ -611,7 +620,9 @@ def test_ensure_collection_listed_marks_fresh_when_all_datasets_list_cleanly(tmp
     assert db.is_listing_fresh() is True
 
 
-def test_ensure_collection_listed_not_fresh_when_a_dataset_fails_to_list(tmp_path):
+def test_ensure_collection_listed_not_fresh_when_a_dataset_fails_to_list(
+    tmp_path: Path,
+) -> None:
     """Regression: a partial listing must NOT be marked complete.
 
     If one dataset's S3 prefix fails to list, the listing is left non-fresh so
@@ -643,7 +654,7 @@ def test_ensure_collection_listed_not_fresh_when_a_dataset_fails_to_list(tmp_pat
     db = DownloadStateDB.for_collection(Path(tmp_path), "coll")
     display = DownloadDisplay()
 
-    def fake_expand(uri, *args, **kwargs):
+    def fake_expand(uri: str, *args: object, **kwargs: object) -> list[tuple[str, int]]:
         if uri == "s3://bucket/bad-prefix/":
             raise RuntimeError("listing failed: access denied")
         return [(uri, 100)]
@@ -668,7 +679,10 @@ def test_download_collections_writes_to_collection_dataset_subdirs(
 ) -> None:
     """Verifies the outdir/<collection.slug>/<dataset.slug>/ layout."""
     with (
-        patch("biohub_data_cli.download.download_http", return_value=None) as mock_http,
+        patch(
+            "biohub_data_cli.download.download_http",
+            return_value=DownloadResult.succeeded(1024),
+        ) as mock_http,
         patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
     ):
         download_collections([MOCK_COLLECTION], Path(tmp_path))
@@ -720,7 +734,10 @@ def test_download_collections_submits_every_dataset_across_collections(
     )
 
     with (
-        patch("biohub_data_cli.download.download_http", return_value=None) as mock_http,
+        patch(
+            "biohub_data_cli.download.download_http",
+            return_value=DownloadResult.succeeded(1024),
+        ) as mock_http,
         patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
     ):
         failures = download_collections([coll_a, coll_b], Path(tmp_path))
@@ -747,12 +764,52 @@ def test_download_collections_collects_worker_failures(tmp_path: Path) -> None:
     )
 
     with (
-        patch("biohub_data_cli.download.download_http", return_value=failure),
+        patch(
+            "biohub_data_cli.download.download_http",
+            return_value=DownloadResult.failed(failure),
+        ),
         patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
     ):
         failures = download_collections([MOCK_COLLECTION], Path(tmp_path))
 
     assert failures == [failure]
+
+
+def test_download_collections_persists_downloaded_size(tmp_path: Path) -> None:
+    """A successful worker returns a `DownloadResult` carrying the byte count, and
+    the orchestrator must persist exactly that size via `mark_downloaded` — the
+    success contract is the size, not just "not a failure"."""
+    collection = Collection.model_validate(
+        {
+            "id": "c",
+            "slug": "sized-collection",
+            "title": "Sized",
+            "datasets": [
+                {
+                    "id": "d1",
+                    "slug": "ds1",
+                    "title": "D1",
+                    "urls": ["https://example.com/a.parquet"],
+                }
+            ],
+        }
+    )
+
+    with (
+        patch(
+            "biohub_data_cli.download.download_http",
+            return_value=DownloadResult.succeeded(123),
+        ),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
+        patch.object(DownloadStateDB, "mark_downloaded", autospec=True) as mock_mark,
+    ):
+        failures = download_collections([collection], Path(tmp_path))
+
+    assert failures == []
+    # The size from the DownloadResult is threaded through to persistence.
+    mock_mark.assert_called_once()
+    assert mock_mark.call_args.kwargs == {"size": 123}
+    assert mock_mark.call_args.args[1:] == ("ds1", "https://example.com/a.parquet")
 
 
 def test_download_collections_shuts_down_on_keyboard_interrupt(tmp_path: Path) -> None:
@@ -786,10 +843,10 @@ def test_download_collections_passes_cancel_event_to_workers(tmp_path: Path) -> 
     received_cancels: list[object] = []
     signature = inspect.signature(download_http)
 
-    def capture(*args: object, **kwargs: object) -> None:
+    def capture(*args: object, **kwargs: object) -> DownloadResult:
         bound = signature.bind(*args, **kwargs)
         received_cancels.append(bound.arguments["cancel"])
-        return None
+        return DownloadResult.succeeded(0)
 
     with (
         patch("biohub_data_cli.download.download_http", side_effect=capture),

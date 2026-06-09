@@ -1,3 +1,32 @@
+"""Collection/dataset download orchestration.
+
+Resume model & assumptions
+--------------------------
+A per-collection SQLite DB caches the listing (every concrete s3/http URL plus
+its expected size) and a per-file `downloaded` flag. Resume re-submits only the
+entries not yet marked `downloaded`. That design has the following assumptions:
+
+- Granularity is per file. A file is either done or not; there is no mid-file
+  resume. Downloads stream to a `.part` file and atomically rename on success,
+  so an interrupted file is re-fetched from scratch rather than left truncated.
+  This works well for collections of many small files (e.g. Zarr chunks) and
+  less well for a single very large file.
+
+- Collections/datasets are assumed immutable between runs. The only protection
+  against drift is the listing TTL (`LISTING_TTL`): once the cached listing
+  expires (or the user passes `--no-resume`) we re-list from scratch; within the
+  TTL, changes on the server — added, removed, or modified objects — are ignored
+  silently.
+
+- The DB, not the filesystem, is the source of truth for what exists. If a user
+  deletes an already-downloaded file by hand, resume trusts the `downloaded`
+  flag and skips it silently rather than re-fetching it.
+
+- HTTP entries are stored with `expected_size=None` (Content-Length isn't known
+  until GET time), so completion is keyed off the `downloaded` flag, never a
+  byte-count comparison.
+"""
+
 import functools
 import os
 import threading
@@ -172,7 +201,7 @@ def submit_dataset_downloads(
                 on_bytes_downloaded,
                 cancel,
             )
-        elif entry.url.startswith(("http://", "https://")):
+        else:
             fut = http_pool.submit(
                 download_http,
                 entry.url,
@@ -183,9 +212,6 @@ def submit_dataset_downloads(
                 on_size_known,
                 cancel,
             )
-        else:
-            # Shouldn't reach here. Skip defensively.
-            continue
         future_to_url[fut] = entry.url
 
     return future_to_url
@@ -376,10 +402,12 @@ def download_collections(
             for future in as_completed(all_futures):
                 result = future.result()
                 coll_slug, ds_slug, url = future_keys[future]
-                if isinstance(result, DownloadFailure):
-                    display.record_failure(result)
+                if result.ok:
+                    collection_dbs[coll_slug].mark_downloaded(
+                        ds_slug, url, size=result.size
+                    )
                 else:
-                    collection_dbs[coll_slug].mark_downloaded(ds_slug, url, size=result)
+                    display.record_failure(result.failure)
         except KeyboardInterrupt as e:
             cancel.set()
             # Rich Live with transient=False lets console.print insert above

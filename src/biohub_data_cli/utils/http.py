@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import requests
-from biohub_data_cli.models import DownloadFailure
+from biohub_data_cli.models import DownloadFailure, DownloadResult
 from biohub_data_cli.utils.cli import DownloadCancelled, safe_join
 
 _HTTP_CHUNK_SIZE = 1024 * 1024  # 1 MB
@@ -38,11 +38,8 @@ def download_http(
     on_bytes_downloaded: Callable[[int], None],
     on_size_known: Callable[[int], None],
     cancel: threading.Event,
-) -> DownloadFailure | int:
+) -> DownloadResult:
     """Download `url` to `outdir/<filename>`.
-
-    On success returns the downloaded file's size in byte so that the caller can
-    persist it. On failure returns a `DownloadFailure`.
 
     `on_size_known(N)` fires once if the server's GET response includes a
     `Content-Length` header, letting the orchestrator grow the task's total
@@ -53,11 +50,13 @@ def download_http(
     try:
         outpath = http_url_to_local_path(url, outdir)
     except ValueError as e:
-        return DownloadFailure(
-            collection_slug=collection_slug,
-            dataset_slug=dataset_slug,
-            url=url,
-            reason=str(e),
+        return DownloadResult.failed(
+            DownloadFailure(
+                collection_slug=collection_slug,
+                dataset_slug=dataset_slug,
+                url=url,
+                reason=str(e),
+            )
         )
     outpath.parent.mkdir(parents=True, exist_ok=True)
     # Stream to a .part file and atomically rename on success so an interrupted
@@ -81,12 +80,14 @@ def download_http(
                         f.write(chunk)
                         on_bytes_downloaded(len(chunk))
         tmp.replace(outpath)
-        return outpath.stat().st_size
+        return DownloadResult.succeeded(outpath.stat().st_size)
     except (requests.RequestException, OSError) as e:
         tmp.unlink(missing_ok=True)
-        return DownloadFailure(
-            collection_slug=collection_slug,
-            dataset_slug=dataset_slug,
-            url=url,
-            reason=str(e),
+        return DownloadResult.failed(
+            DownloadFailure(
+                collection_slug=collection_slug,
+                dataset_slug=dataset_slug,
+                url=url,
+                reason=str(e),
+            )
         )
