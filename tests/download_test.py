@@ -304,6 +304,63 @@ def test_download_collection_accepts_multiple_ids(tmp_path: Path) -> None:
         assert mock_fetch.call_count == 2
 
 
+def test_download_collection_dataset_filters_to_subset(tmp_path: Path) -> None:
+    with (
+        patch("biohub_data_cli.download.fetch_collection") as mock_fetch,
+        patch("biohub_data_cli.download.download_collections") as mock_dl,
+    ):
+        mock_fetch.return_value = MOCK_COLLECTION.model_copy(deep=True)
+        mock_dl.return_value = []
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "download",
+                "collection",
+                "coll-1",
+                "--dataset",
+                "matrix-b",
+                "-o",
+                str(tmp_path),
+                "--yes",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        passed_collections, _ = mock_dl.call_args[0]
+        assert [d.slug for d in passed_collections[0].datasets] == ["matrix-b"]
+
+
+def test_download_collection_dataset_unknown_slug_errors(tmp_path: Path) -> None:
+    with patch("biohub_data_cli.download.fetch_collection") as mock_fetch:
+        mock_fetch.return_value = MOCK_COLLECTION.model_copy(deep=True)
+
+        result = CliRunner().invoke(
+            cli,
+            ["download", "collection", "coll-1", "--dataset", "nope", "--yes"],
+        )
+
+        assert result.exit_code != 0
+        assert "Unknown dataset slug(s)" in result.output
+        # Lists the available slugs so a typo surfaces the valid set.
+        assert "matrix-a" in result.output and "matrix-b" in result.output
+
+
+def test_download_collection_dataset_rejected_with_multiple_collections(
+    tmp_path: Path,
+) -> None:
+    with patch("biohub_data_cli.download.fetch_collection") as mock_fetch:
+        mock_fetch.return_value = MOCK_COLLECTION.model_copy(deep=True)
+
+        result = CliRunner().invoke(
+            cli,
+            ["download", "collection", "a", "b", "--dataset", "matrix-a", "--yes"],
+        )
+
+        assert result.exit_code != 0
+        assert "single collection" in result.output
+
+
 def test_download_collection_prints_failure_summary_and_exits_nonzero(
     tmp_path: Path,
 ) -> None:
@@ -590,11 +647,11 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(
     assert "listing failed" in failure.reason
 
 
-def test_ensure_collection_listed_marks_fresh_when_all_datasets_list_cleanly(
+def test_ensure_collection_listed_marks_listed_when_dataset_lists_cleanly(
     tmp_path: Path,
 ) -> None:
-    """Happy path: every dataset lists without error, so the listing is
-    cacheable and a resume run can trust it."""
+    """Happy path: a dataset that lists without error is marked listed, so a
+    resume run within TTL can trust its cached entries."""
     collection = Collection.model_validate(
         {
             "id": "coll-1",
@@ -611,24 +668,25 @@ def test_ensure_collection_listed_marks_fresh_when_all_datasets_list_cleanly(
         }
     )
     db = DownloadStateDB.for_collection(Path(tmp_path), "coll")
+    db.ensure_ready()
     with patch(
         "biohub_data_cli.utils.s3.expand_s3_location",
         return_value=[("s3://bucket/a.h5ad", 100)],
     ):
         ensure_collection_listed(collection, db, DownloadDisplay())
 
-    assert db.is_listing_fresh() is True
+    assert db.get_unexpired_dataset_slugs() == {"matrix-a"}
 
 
-def test_ensure_collection_listed_not_fresh_when_a_dataset_fails_to_list(
+def test_ensure_collection_listed_leaves_failed_dataset_unlisted(
     tmp_path: Path,
 ) -> None:
-    """Regression: a partial listing must NOT be marked complete.
+    """Regression: a dataset that fails to list must NOT be marked listed.
 
-    If one dataset's S3 prefix fails to list, the listing is left non-fresh so
-    the next run re-lists from scratch. Otherwise resume would skip listing,
-    find no entries for the failed dataset, never resurface the failure, and
-    falsely report success.
+    If one dataset's S3 prefix fails, only the clean dataset is cached; the
+    failed one stays unlisted so the next run re-lists just it. Otherwise resume
+    would find no entries for it, never resurface the failure, and falsely
+    report success — while the clean datasets are unaffected.
     """
     collection = Collection.model_validate(
         {
@@ -652,6 +710,7 @@ def test_ensure_collection_listed_not_fresh_when_a_dataset_fails_to_list(
         }
     )
     db = DownloadStateDB.for_collection(Path(tmp_path), "coll")
+    db.ensure_ready()
     display = DownloadDisplay()
 
     def fake_expand(uri: str, *args: object, **kwargs: object) -> list[tuple[str, int]]:
@@ -667,8 +726,8 @@ def test_ensure_collection_listed_not_fresh_when_a_dataset_fails_to_list(
 
     # The failure is surfaced now...
     assert any(f.dataset_slug == "matrix-bad" for f in display.failures)
-    # ...and the listing is NOT trusted for resume, so the next run re-lists.
-    assert db.is_listing_fresh() is False
+    # ...the failed dataset is not trusted for resume, but the clean one is.
+    assert db.get_unexpired_dataset_slugs() == {"matrix-ok"}
 
 
 # ── download_collections ────────────────────────────────────────────────────

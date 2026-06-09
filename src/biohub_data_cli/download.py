@@ -222,31 +222,22 @@ def ensure_collection_listed(
     db: DownloadStateDB,
     display: DownloadDisplay,
 ) -> None:
-    """Populate `db` with a fresh listing for every dataset in `collection`.
+    """Ensure `db` holds a fresh listing for every dataset in `collection`.
 
-    Unconditionally nukes any existing DB and re-lists — the caller is
-    responsible for deciding whether listing is needed (cf. `is_listing_fresh`
-    and the `--resume` flag in `download_collections`).
-
-    Listing failures are recorded against `display` rather than raised, so
-    one bad prefix doesn't prevent other datasets in the same collection
-    from being listed and downloaded.
-
-    The listing is marked complete (and thus cacheable for resume) ONLY when
-    every dataset listed cleanly. If any dataset failed to list, we leave
-    `listing_completed_at` NULL so `is_listing_fresh()` returns False and the
-    next run re-lists from scratch.
+    Lists only the datasets whose cached listing is absent or expired; datasets
+    still within TTL keep their entries and `downloaded` marks so resume works.
+    A stale dataset's old rows are dropped before re-listing.
     """
-    db.init_fresh()
-    had_listing_failure = False
+    unexpired_dataset_slugs = db.get_unexpired_dataset_slugs()
     for dataset in collection.datasets:
+        if dataset.slug in unexpired_dataset_slugs:
+            continue
+        db.delete_dataset_entries(dataset.slug)
         listing_failures = _list_and_record(collection.slug, dataset, db, display)
         for f in listing_failures:
             display.record_failure(f)
-        if listing_failures:
-            had_listing_failure = True
-    if not had_listing_failure:
-        db.mark_listing_complete()
+        if not listing_failures:
+            db.mark_dataset_listed(dataset.slug)
 
 
 def _list_and_record(
@@ -325,15 +316,16 @@ def download_collections(
 ) -> list[DownloadFailure]:
     """Download all datasets across all collections via shared HTTP and S3 pools.
 
-    `resume=True` (the default): if a non-expired state DB exists for a
-    collection, skip listing and pick up pending downloads from it. `resume=False`
+    `resume=True` (the default): each dataset's cached listing is reused if it's
+    within TTL, so pending downloads pick up where they left off. `resume=False`
     nukes any existing DB for each collection and lists from scratch.
 
     Per-collection state lives at `outdir/{collection.slug}/.biohub-data-cli/state.db`
     and is intentionally kept after success — within TTL, re-running the same
     command re-submits only entries not yet marked `downloaded`, so a completed
-    run becomes a fast no-op rather than a full re-list and re-download. The DB
-    rotates out when its `listing_completed_at` exceeds TTL or the user passes `--no-resume`.
+    run becomes a fast no-op rather than a full re-list and re-download. Each
+    dataset's listing rotates out when its `listed_at` exceeds TTL or the user
+    passes `--no-resume`.
     """
     # Shared cancellation signal. Workers check it between chunks and bail out,
     # cleaning up their .part file, so that all workers exit within one chunk
@@ -341,19 +333,25 @@ def download_collections(
     cancel = threading.Event()
     kbi: KeyboardInterrupt | None = None
 
-    # Pre-decide which collections can reuse their cached listing
     collection_dbs: dict[str, DownloadStateDB] = {}
-    cached_collections: set[str] = set()
+    reused_datasets = 0
     for collection in collections:
         db = DownloadStateDB.for_collection(outdir, collection.slug)
-        if resume and db.is_listing_fresh():
-            cached_collections.add(collection.slug)
+        # --no-resume forces a fresh listing; otherwise reuse the DB, rebuilding
+        # it if it's corrupt or from a different schema version.
+        if resume:
+            db.ensure_ready()
+            unexpired_dataset_slugs = db.get_unexpired_dataset_slugs()
+            reused_datasets += sum(
+                1 for d in collection.datasets if d.slug in unexpired_dataset_slugs
+            )
+        else:
+            db.init_fresh()
         collection_dbs[collection.slug] = db
 
-    if cached_collections:
+    if reused_datasets:
         console.print(
-            f"[dim]Resuming {len(cached_collections)} of {len(collections)} "
-            f"collection(s) from cached state.[/dim]"
+            f"[dim]Resuming {reused_datasets} dataset(s) from cached state.[/dim]"
         )
 
     all_futures: list[Future] = []
@@ -368,8 +366,6 @@ def download_collections(
     ):
         # Phase 1: ensure every collection has a fresh listing in its DB.
         for collection in collections:
-            if collection.slug in cached_collections:
-                continue
             ensure_collection_listed(
                 collection, collection_dbs[collection.slug], display
             )
@@ -439,6 +435,31 @@ def download_group() -> None:
     """Download data from Biohub."""
 
 
+def _filter_datasets(collection: Collection, dataset_slugs: str) -> None:
+    """Narrow `collection.datasets` in place to the requested slugs.
+
+    `dataset_slugs` is the raw comma-separated `--dataset` value. Unknown slugs
+    are an error listing the available slugs, so a typo surfaces the valid set.
+    """
+    requested = [s.strip() for s in dataset_slugs.split(",") if s.strip()]
+    if not requested:
+        raise click.UsageError("--dataset given but no slugs provided.")
+
+    available = {d.slug: d for d in collection.datasets}
+    unknown = [s for s in requested if s not in available]
+    if unknown:
+        raise click.ClickException(
+            f"Unknown dataset slug(s) in {collection.slug}: {', '.join(unknown)}. "
+            f"Available: {', '.join(sorted(available))}."
+        )
+
+    # Preserve the user's requested order, de-duplicating repeats.
+    seen: set[str] = set()
+    collection.datasets = [
+        available[s] for s in requested if not (s in seen or seen.add(s))
+    ]
+
+
 @download_group.command("collection")
 @click.argument("ids", nargs=-1, required=True)
 @click.option(
@@ -449,6 +470,14 @@ def download_group() -> None:
     help="Output directory for downloaded files.",
 )
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.option(
+    "--dataset",
+    "dataset_slugs",
+    default=None,
+    help="Comma-separated dataset slugs to download a subset of the collection "
+    "(e.g. --dataset matrix-a,matrix-b). Only valid with a single collection. "
+    "Run --dry-run to see available slugs.",
+)
 @click.option(
     "--dry-run",
     is_flag=True,
@@ -462,7 +491,12 @@ def download_group() -> None:
     "fresh listing and re-download.",
 )
 def download_collection_command(
-    ids: tuple[str, ...], outdir: Path, yes: bool, dry_run: bool, resume: bool
+    ids: tuple[str, ...],
+    outdir: Path,
+    yes: bool,
+    dataset_slugs: str | None,
+    dry_run: bool,
+    resume: bool,
 ) -> None:
     """Download one or more collections by ID."""
     if dry_run and yes:
@@ -472,6 +506,13 @@ def download_collection_command(
     collections = [
         fetch_collection(cid, dry_run=dry_run, analytics=analytics) for cid in ids
     ]
+
+    if dataset_slugs is not None:
+        if len(collections) > 1:
+            raise click.UsageError(
+                "--dataset can only be used with a single collection."
+            )
+        _filter_datasets(collections[0], dataset_slugs)
 
     n_datasets = sum(len(c.datasets) for c in collections)
     if n_datasets == 0:
