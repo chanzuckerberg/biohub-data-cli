@@ -91,9 +91,12 @@ class DownloadStateDB:
         self._unlink()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.executescript(_SCHEMA)
             conn.commit()
+            # Stamp the version last: if we crash mid-init, the version stays 0
+            # and `ensure_ready` rebuilds, so a matching version always implies
+            # the tables exist.
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def ensure_ready(self) -> None:
         """Make the DB usable for a resumed run, preserving a valid same-version
