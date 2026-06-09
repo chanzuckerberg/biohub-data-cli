@@ -21,7 +21,7 @@ from biohub_data_cli.download import (
     submit_dataset_downloads,
 )
 from biohub_data_cli.utils.cli import DownloadDisplay
-from biohub_data_cli.utils.download_state import DownloadStateDB
+from biohub_data_cli.utils.download_state import CollectionEntry, DownloadStateDB
 from biohub_data_cli.utils.http import download_http
 from biohub_data_cli.main import cli
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure, DownloadResult
@@ -810,6 +810,55 @@ def test_download_collections_submits_every_dataset_across_collections(
         ("coll-a", "ds1"),
         ("coll-a", "ds2"),
         ("coll-b", "ds3"),
+    }
+
+
+def test_download_collections_no_resume_with_filter_preserves_other_datasets(
+    tmp_path: Path,
+) -> None:
+    """`--no-resume` scoped to a `--dataset` subset must wipe only the in-scope
+    dataset's state, leaving the rest of the collection's resume state intact.
+
+    A whole-DB nuke here would discard sibling datasets' `downloaded` marks,
+    forcing a needless re-download on the next full run.
+    """
+    db = DownloadStateDB.for_collection(Path(tmp_path), "test-collection")
+    db.init_fresh()
+    db.insert_entries(
+        [
+            CollectionEntry("matrix-a", "https://example.com/a.parquet", 1024, True),
+            CollectionEntry("matrix-b", "s3://bucket/matrix-b/old.parquet", 512, True),
+        ]
+    )
+    db.mark_dataset_listed("matrix-a")
+    db.mark_dataset_listed("matrix-b")
+
+    # Filtered, no-resume run over matrix-b only.
+    filtered = MOCK_COLLECTION.model_copy(deep=True)
+    filtered.datasets = [d for d in filtered.datasets if d.slug == "matrix-b"]
+
+    with (
+        patch(
+            "biohub_data_cli.download.download_s3_object",
+            return_value=DownloadResult.succeeded(512),
+        ),
+        patch(
+            "biohub_data_cli.utils.s3.expand_s3_location",
+            return_value=[("s3://bucket/matrix-b/new.parquet", 512)],
+        ),
+    ):
+        download_collections(
+            [filtered], Path(tmp_path), resume=False, dataset_filtered=True
+        )
+
+    # matrix-a's cached state is untouched.
+    assert "matrix-a" in db.get_unexpired_dataset_slugs()
+    assert {e.url for e in db.iter_entries_for_dataset("matrix-a")} == {
+        "https://example.com/a.parquet"
+    }
+    # matrix-b was wiped and re-listed from scratch (old row gone, new row in).
+    assert {e.url for e in db.iter_entries_for_dataset("matrix-b")} == {
+        "s3://bucket/matrix-b/new.parquet"
     }
 
 

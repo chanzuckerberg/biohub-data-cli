@@ -312,13 +312,18 @@ def _list_and_record(
 
 
 def download_collections(
-    collections: list[Collection], outdir: Path, resume: bool = True
+    collections: list[Collection],
+    outdir: Path,
+    resume: bool = True,
+    dataset_filtered: bool = False,
 ) -> list[DownloadFailure]:
     """Download all datasets across all collections via shared HTTP and S3 pools.
 
     `resume=True` (the default): each dataset's cached listing is reused if it's
     within TTL, so pending downloads pick up where they left off. `resume=False`
-    nukes any existing DB for each collection and lists from scratch.
+    lists from scratch — wiping the whole per-collection DB, or, when
+    `dataset_filtered=True` (a `--dataset` subset is in scope), only the in-scope
+    datasets' rows so the rest of the collection's resume state is left intact.
 
     Per-collection state lives at `outdir/{collection.slug}/.biohub-data-cli/state.db`
     and is intentionally kept after success — within TTL, re-running the same
@@ -337,14 +342,21 @@ def download_collections(
     reused_datasets = 0
     for collection in collections:
         db = DownloadStateDB.for_collection(outdir, collection.slug)
-        # --no-resume forces a fresh listing; otherwise reuse the DB, rebuilding
-        # it if it's corrupt or from a different schema version.
         if resume:
+            # Reuse the DB, rebuilding it if it's corrupt or a different schema
+            # version.
             db.ensure_ready()
             unexpired_dataset_slugs = db.get_unexpired_dataset_slugs()
             reused_datasets += sum(
                 1 for d in collection.datasets if d.slug in unexpired_dataset_slugs
             )
+        elif dataset_filtered:
+            # --no-resume scoped to a --dataset subset: force a fresh listing for
+            # only the in-scope datasets, leaving the rest of the collection's
+            # state intact.
+            db.ensure_ready()
+            for d in collection.datasets:
+                db.delete_dataset_entries(d.slug)
         else:
             db.init_fresh()
         collection_dbs[collection.slug] = db
@@ -536,7 +548,12 @@ def download_collection_command(
         )
 
     try:
-        failures = download_collections(collections, outdir, resume=resume)
+        failures = download_collections(
+            collections,
+            outdir,
+            resume=resume,
+            dataset_filtered=dataset_slugs is not None,
+        )
     except KeyboardInterrupt:
         # download_collections already drained workers (its `with` blocks
         # waited for shutdown) and printed the cancellation line. os._exit
