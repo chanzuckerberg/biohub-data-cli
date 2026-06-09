@@ -1,3 +1,32 @@
+"""Collection/dataset download orchestration.
+
+Resume model & assumptions
+--------------------------
+A per-collection SQLite DB caches the listing (every concrete s3/http URL plus
+its expected size) and a per-file `downloaded` flag. Resume re-submits only the
+entries not yet marked `downloaded`. That design has the following assumptions:
+
+- Granularity is per file. A file is either done or not; there is no mid-file
+  resume. Downloads stream to a `.part` file and atomically rename on success,
+  so an interrupted file is re-fetched from scratch rather than left truncated.
+  This works well for collections of many small files (e.g. Zarr chunks) and
+  less well for a single very large file.
+
+- Collections/datasets are assumed immutable between runs. The only protection
+  against drift is the listing TTL (`LISTING_TTL`): once the cached listing
+  expires (or the user passes `--no-resume`) we re-list from scratch; within the
+  TTL, changes on the server — added, removed, or modified objects — are ignored
+  silently.
+
+- The DB, not the filesystem, is the source of truth for what exists. If a user
+  deletes an already-downloaded file by hand, resume trusts the `downloaded`
+  flag and skips it silently rather than re-fetching it.
+
+- HTTP entries are stored with `expected_size=None` (Content-Length isn't known
+  until GET time), so completion is keyed off the `downloaded` flag, never a
+  byte-count comparison.
+"""
+
 import functools
 import os
 import threading
@@ -14,6 +43,11 @@ from rich.markup import escape
 from biohub_data_cli.config import service_url
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
 from biohub_data_cli.utils.cli import DownloadDisplay, console
+from biohub_data_cli.utils.download_state import (
+    LISTING_TTL,
+    CollectionEntry,
+    DownloadStateDB,
+)
 from biohub_data_cli.utils.http import download_http
 from biohub_data_cli.utils.s3 import (
     S3_MAX_WORKERS,
@@ -112,27 +146,124 @@ def submit_dataset_downloads(
     collection_slug: str,
     dataset: Dataset,
     dataset_outdir: Path,
+    db: DownloadStateDB,
     http_pool: ThreadPoolExecutor,
     s3_pool: ThreadPoolExecutor,
     display: DownloadDisplay,
     cancel: threading.Event,
-) -> tuple[list[Future], list[DownloadFailure]]:
-    """Submit one dataset's downloads to the shared pools.
+) -> dict[Future, str]:
+    """Submit one dataset's pending downloads to the shared pools.
 
-    Returns (submitted_futures, submission_failures). `submission_failures`
-    are failures known synchronously during submission — unsupported URL
-    schemes and S3-prefix-listing errors that prevent ever creating a future.
-    Anything that fails inside a worker shows up via the returned futures.
+    Reads the dataset's entries from the DB (caller is responsible for the DB
+    already being populated — see `ensure_collection_listed`) and submits a
+    future for any entry not yet marked `downloaded=1`. Returns a
+    `future_to_url` map so the orchestrator can call `mark_downloaded` after
+    each successful future.
 
-    One progress task per dataset is added when there's at least one URL to
-    submit; all workers for the dataset share the same on_bytes_downloaded
-    callback bound to that task.
-    A Zarr that expands to N chunk objects shows one aggregate bar rather than
-    N tiny ones.
+    One progress task per dataset; it's seeded with the bytes already on disk
+    so a bar visibly picks up where it left off across resume runs.
+
+    This function is intentionally unaware of "is this a fresh run or a
+    resume?" — that decision is contained in the listing phase. Here, the DB
+    is the single source of truth for what should exist on disk.
     """
-    submission_failures: list[DownloadFailure] = []
     dataset_outdir.mkdir(parents=True, exist_ok=True)
+    label = f"{collection_slug}/{dataset.slug}"
 
+    # Query from DB instead of statting file size on disk.
+    stats = db.dataset_progress(dataset.slug)
+    if stats.total_count == 0:
+        return {}
+
+    if stats.pending_count == 0:
+        display.progress.add_task(
+            escape(label), total=stats.total_bytes or None, completed=stats.done_bytes
+        )
+        return {}
+
+    task_id = display.progress.add_task(
+        escape(label),
+        total=stats.total_bytes or None,
+        completed=stats.done_bytes,
+    )
+    on_bytes_downloaded = functools.partial(display.advance_task, task_id)
+    on_size_known = functools.partial(display.grow_task_total, task_id)
+
+    future_to_url: dict[Future, str] = {}
+    for entry in list(db.iter_entries_for_dataset(dataset.slug, pending_only=True)):
+        if entry.url.startswith("s3://"):
+            fut = s3_pool.submit(
+                download_s3_object,
+                entry.url,
+                dataset_outdir,
+                collection_slug,
+                dataset.slug,
+                on_bytes_downloaded,
+                cancel,
+            )
+        else:
+            fut = http_pool.submit(
+                download_http,
+                entry.url,
+                dataset_outdir,
+                collection_slug,
+                dataset.slug,
+                on_bytes_downloaded,
+                on_size_known,
+                cancel,
+            )
+        future_to_url[fut] = entry.url
+
+    return future_to_url
+
+
+def ensure_collection_listed(
+    collection: Collection,
+    db: DownloadStateDB,
+    display: DownloadDisplay,
+) -> None:
+    """Populate `db` with a fresh listing for every dataset in `collection`.
+
+    Unconditionally nukes any existing DB and re-lists — the caller is
+    responsible for deciding whether listing is needed (cf. `is_listing_fresh`
+    and the `--resume` flag in `download_collections`).
+
+    Listing failures are recorded against `display` rather than raised, so
+    one bad prefix doesn't prevent other datasets in the same collection
+    from being listed and downloaded.
+
+    The listing is marked complete (and thus cacheable for resume) ONLY when
+    every dataset listed cleanly. If any dataset failed to list, we leave
+    `listing_completed_at` NULL so `is_listing_fresh()` returns False and the
+    next run re-lists from scratch.
+    """
+    db.init_fresh()
+    had_listing_failure = False
+    for dataset in collection.datasets:
+        listing_failures = _list_and_record(collection.slug, dataset, db, display)
+        for f in listing_failures:
+            display.record_failure(f)
+        if listing_failures:
+            had_listing_failure = True
+    if not had_listing_failure:
+        db.mark_listing_complete()
+
+
+def _list_and_record(
+    collection_slug: str,
+    dataset: Dataset,
+    db: DownloadStateDB,
+    display: DownloadDisplay,
+) -> list[DownloadFailure]:
+    """List one dataset's URLs into the DB. Splits `dataset.urls` by scheme,
+    expands S3 prefixes, inserts every concrete (url, size) row, and returns
+    any listing-side failures (unsupported URL schemes, S3-listing errors).
+
+    HTTP URLs are inserted with `expected_size=None` — Content-Length isn't
+    known until the GET response, and HEAD-ing every HTTP URL during listing
+    isn't worth the round trip.
+    """
+    listing_failures: list[DownloadFailure] = []
     http_urls, s3_uris, unknown_urls = [], [], []
     for url in dataset.urls:
         if url.startswith("s3://"):
@@ -143,7 +274,7 @@ def submit_dataset_downloads(
             unknown_urls.append(url)
 
     for url in unknown_urls:
-        submission_failures.append(
+        listing_failures.append(
             DownloadFailure(
                 collection_slug=collection_slug,
                 dataset_slug=dataset.slug,
@@ -152,13 +283,6 @@ def submit_dataset_downloads(
             )
         )
 
-    # Expand S3 prefixes into (uri, size) pairs so we can both submit each
-    # object as its own future and seed the progress task with the actual
-    # byte total directly from list_objects_v2 / head_object.
-    #
-    # Pipe per-page progress to the display so the user sees the LIST walk
-    # advancing — without this, huge prefixes (millions of zarr chunks) show
-    # an empty Live region for minutes before any download bar appears.
     label = f"{collection_slug}/{dataset.slug}"
 
     def on_listing_progress(n_objects: int, total_bytes: int) -> None:
@@ -166,91 +290,108 @@ def submit_dataset_downloads(
             f"listing {label} · {n_objects:,} objects · {format_bytes(total_bytes)}"
         )
 
-    s3_objects, listing_failures = resolve_s3_uris(
+    s3_objects, s3_failures = resolve_s3_uris(
         collection_slug,
         dataset.slug,
         s3_uris,
         on_listing_progress=on_listing_progress,
     )
     display.set_listing(None)
-    submission_failures.extend(listing_failures)
+    listing_failures.extend(s3_failures)
 
-    if not s3_objects and not http_urls:
-        return [], submission_failures
-
-    # Seed total with what we already know: S3 sizes are exact and free.
-    # HTTP totals get added as workers learn Content-Length (see on_size_known).
-    # Don't fall back to dataset.file_size_bytes — grow_task_total adds, so
-    # mixing a BE estimate with per-worker Content-Length growth double-counts.
-    # HTTP-only datasets just start indeterminate until the first header lands.
-    initial_total = sum(size for _, size in s3_objects)
-    task_id = display.progress.add_task(
-        escape(f"{collection_slug}/{dataset.slug}"),
-        total=initial_total or None,
-    )
-    on_bytes_downloaded = functools.partial(display.advance_task, task_id)
-    on_size_known = functools.partial(display.grow_task_total, task_id)
-
-    futures: list[Future] = [
-        # S3 sizes are already accumulated into the task total at `expand_s3_location`
-        # time, so no need to call `on_size_known`.
-        s3_pool.submit(
-            download_s3_object,
-            obj_uri,
-            dataset_outdir,
-            collection_slug,
-            dataset.slug,
-            on_bytes_downloaded,
-            cancel,
+    entries: list[CollectionEntry] = [
+        CollectionEntry(
+            dataset_slug=dataset.slug,
+            url=obj_uri,
+            expected_size=size,
+            downloaded=False,
         )
-        for obj_uri, _ in s3_objects
+        for obj_uri, size in s3_objects
     ] + [
-        http_pool.submit(
-            download_http,
-            url,
-            dataset_outdir,
-            collection_slug,
-            dataset.slug,
-            on_bytes_downloaded,
-            on_size_known,
-            cancel,
+        CollectionEntry(
+            dataset_slug=dataset.slug,
+            url=url,
+            expected_size=None,
+            downloaded=False,
         )
         for url in http_urls
     ]
-    return futures, submission_failures
+    db.insert_entries(entries)
+    return listing_failures
 
 
 def download_collections(
-    collections: list[Collection], outdir: Path
+    collections: list[Collection], outdir: Path, resume: bool = True
 ) -> list[DownloadFailure]:
-    """Download all datasets across all collections via shared HTTP and S3 pools."""
-    all_futures: list[Future] = []
+    """Download all datasets across all collections via shared HTTP and S3 pools.
+
+    `resume=True` (the default): if a non-expired state DB exists for a
+    collection, skip listing and pick up pending downloads from it. `resume=False`
+    nukes any existing DB for each collection and lists from scratch.
+
+    Per-collection state lives at `outdir/{collection.slug}/.biohub-data-cli/state.db`
+    and is intentionally kept after success — within TTL, re-running the same
+    command re-submits only entries not yet marked `downloaded`, so a completed
+    run becomes a fast no-op rather than a full re-list and re-download. The DB
+    rotates out when its `listing_completed_at` exceeds TTL or the user passes `--no-resume`.
+    """
     # Shared cancellation signal. Workers check it between chunks and bail out,
     # cleaning up their .part file, so that all workers exit within one chunk
     # instead of hanging.
     cancel = threading.Event()
     kbi: KeyboardInterrupt | None = None
 
+    # Pre-decide which collections can reuse their cached listing
+    collection_dbs: dict[str, DownloadStateDB] = {}
+    cached_collections: set[str] = set()
+    for collection in collections:
+        db = DownloadStateDB.for_collection(outdir, collection.slug)
+        if resume and db.is_listing_fresh():
+            cached_collections.add(collection.slug)
+        collection_dbs[collection.slug] = db
+
+    if cached_collections:
+        console.print(
+            f"[dim]Resuming {len(cached_collections)} of {len(collections)} "
+            f"collection(s) from cached state.[/dim]"
+        )
+
+    all_futures: list[Future] = []
+    # future → (collection_slug, dataset_slug, url) — used to mark the entry as
+    # downloaded in the right DB once the future completes successfully.
+    future_keys: dict[Future, tuple[str, str, str]] = {}
+
     with (
         DownloadDisplay() as display,
         ThreadPoolExecutor(max_workers=_HTTP_MAX_WORKERS) as http_pool,
         ThreadPoolExecutor(max_workers=S3_MAX_WORKERS) as s3_pool,
     ):
+        # Phase 1: ensure every collection has a fresh listing in its DB.
         for collection in collections:
+            if collection.slug in cached_collections:
+                continue
+            ensure_collection_listed(
+                collection, collection_dbs[collection.slug], display
+            )
+
+        # Phase 2: submit pending downloads.
+        for collection in collections:
+            collection_db = collection_dbs[collection.slug]
             for dataset in collection.datasets:
                 ds_outdir = outdir / collection.slug / dataset.slug
-                futs, submission_failures = submit_dataset_downloads(
+                fut_to_url = submit_dataset_downloads(
                     collection.slug,
                     dataset,
                     ds_outdir,
+                    collection_db,
                     http_pool,
                     s3_pool,
                     display,
                     cancel,
                 )
-                for f in submission_failures:
-                    display.record_failure(f)
-                all_futures.extend(futs)
+                for fut, url in fut_to_url.items():
+                    future_keys[fut] = (collection.slug, dataset.slug, url)
+                    all_futures.append(fut)
 
         # All listings done; per-object downloads dominate from here. Attribution
         # is fuzzy if datasets interleave (later datasets' listings would land in
@@ -260,8 +401,13 @@ def download_collections(
         try:
             for future in as_completed(all_futures):
                 result = future.result()
-                if result is not None:
-                    display.record_failure(result)
+                coll_slug, ds_slug, url = future_keys[future]
+                if result.ok:
+                    collection_dbs[coll_slug].mark_downloaded(
+                        ds_slug, url, size=result.size
+                    )
+                else:
+                    display.record_failure(result.failure)
         except KeyboardInterrupt as e:
             cancel.set()
             # Rich Live with transient=False lets console.print insert above
@@ -276,7 +422,10 @@ def download_collections(
             kbi = e
 
     if kbi is not None:
-        console.print("\n[yellow]cancelled — partial files cleaned up[/yellow]")
+        console.print(
+            "\n[yellow]cancelled — rerun the same command to resume from where "
+            "you left off.[/yellow]"
+        )
         raise kbi
 
     return display.failures
@@ -305,8 +454,15 @@ def download_group() -> None:
     is_flag=True,
     help="Print per-dataset statistics without downloading.",
 )
+@click.option(
+    "--resume/--no-resume",
+    default=True,
+    help="Skip files already downloaded in a prior run if cached state is "
+    f"available and within TTL ({LISTING_TTL.days} days). --no-resume forces a "
+    "fresh listing and re-download.",
+)
 def download_collection_command(
-    ids: tuple[str, ...], outdir: Path, yes: bool, dry_run: bool
+    ids: tuple[str, ...], outdir: Path, yes: bool, dry_run: bool, resume: bool
 ) -> None:
     """Download one or more collections by ID."""
     if dry_run and yes:
@@ -339,7 +495,7 @@ def download_collection_command(
         )
 
     try:
-        failures = download_collections(collections, outdir)
+        failures = download_collections(collections, outdir, resume=resume)
     except KeyboardInterrupt:
         # download_collections already drained workers (its `with` blocks
         # waited for shutdown) and printed the cancellation line. os._exit

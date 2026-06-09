@@ -13,18 +13,33 @@ import requests
 from click.testing import CliRunner
 
 from biohub_data_cli.download import (
+    _list_and_record,
     analytics_disabled,
     download_collections,
+    ensure_collection_listed,
     fetch_collection,
     submit_dataset_downloads,
 )
 from biohub_data_cli.utils.cli import DownloadDisplay
+from biohub_data_cli.utils.download_state import DownloadStateDB
 from biohub_data_cli.utils.http import download_http
 from biohub_data_cli.main import cli
-from biohub_data_cli.models import Collection, Dataset, DownloadFailure
+from biohub_data_cli.models import Collection, Dataset, DownloadFailure, DownloadResult
 
 # Never-set event for tests that don't exercise the cancel path.
 _NEVER_CANCEL = threading.Event()
+
+
+def _fresh_db(tmp_path: Path, collection_slug: str = "coll") -> DownloadStateDB:
+    """A freshly-initialized DownloadStateDB for unit-testing submit_dataset_downloads.
+
+    Tests that exercise submit_dataset_downloads directly need a DB instance
+    in the right shape; this is the common setup.
+    """
+    db = DownloadStateDB.for_collection(Path(tmp_path), collection_slug)
+    db.init_fresh()
+    return db
+
 
 MOCK_COLLECTION = Collection.model_validate(
     {
@@ -353,26 +368,89 @@ def test_submit_dataset_downloads_routes_and_collects_submission_failures(
         mock_http.return_value = None
         mock_s3.return_value = None
 
+        db = _fresh_db(tmp_path)
+        display = DownloadDisplay()
+        listing_failures = _list_and_record("coll", dataset, db, display)
+
         with (
             ThreadPoolExecutor(max_workers=2) as http_ex,
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
-            futures, submission_failures = submit_dataset_downloads(
+            futures = submit_dataset_downloads(
                 "coll",
                 dataset,
                 Path(tmp_path),
+                db,
                 http_ex,
                 s3_ex,
-                DownloadDisplay(),
+                display,
                 _NEVER_CANCEL,
             )
             for f in futures:
                 f.result()
 
     assert len(futures) == 2
-    assert submission_failures == []
+    assert listing_failures == []
     mock_http.assert_called_once()
     mock_s3.assert_called_once()
+
+
+def test_submit_dataset_downloads_resume_submits_pending_http_when_s3_done(
+    tmp_path: Path,
+) -> None:
+    """Mixed S3+HTTP dataset: if the S3 objects are already marked downloaded
+    but the HTTP file is not, resume must still submit the HTTP download.
+
+    HTTP entries are stored with expected_size=None, so a byte-sum completion
+    check would treat this dataset as complete and silently skip the HTTP file.
+    Completion must key off the `downloaded` flag, not byte totals.
+    """
+    dataset = Dataset.model_validate(
+        {
+            "id": "ds-1",
+            "slug": "matrix-a",
+            "title": "Matrix A",
+            "urls": ["https://example.com/a.csv", "s3://bucket/b.h5ad"],
+        }
+    )
+
+    with (
+        patch("biohub_data_cli.download.download_http") as mock_http,
+        patch("biohub_data_cli.download.download_s3_object") as mock_s3,
+        patch(
+            "biohub_data_cli.utils.s3.expand_s3_location",
+            return_value=[("s3://bucket/b.h5ad", 100)],
+        ),
+    ):
+        mock_http.return_value = None
+        mock_s3.return_value = None
+
+        db = _fresh_db(tmp_path)
+        display = DownloadDisplay()
+        _list_and_record("coll", dataset, db, display)
+        # Simulate a prior run that finished the S3 object but not the HTTP file.
+        db.mark_downloaded("matrix-a", "s3://bucket/b.h5ad", size=100)
+
+        with (
+            ThreadPoolExecutor(max_workers=2) as http_ex,
+            ThreadPoolExecutor(max_workers=2) as s3_ex,
+        ):
+            futures = submit_dataset_downloads(
+                "coll",
+                dataset,
+                Path(tmp_path),
+                db,
+                http_ex,
+                s3_ex,
+                display,
+                _NEVER_CANCEL,
+            )
+            for f in futures:
+                f.result()
+
+    assert len(futures) == 1
+    mock_http.assert_called_once()
+    mock_s3.assert_not_called()
 
 
 def test_submit_dataset_downloads_unknown_scheme(tmp_path: Path) -> None:
@@ -385,23 +463,33 @@ def test_submit_dataset_downloads_unknown_scheme(tmp_path: Path) -> None:
         }
     )
 
+    db = _fresh_db(tmp_path)
+    display = DownloadDisplay()
+    listing_failures = _list_and_record("coll", dataset, db, display)
+
     with (
         ThreadPoolExecutor(max_workers=1) as http_ex,
         ThreadPoolExecutor(max_workers=1) as s3_ex,
     ):
-        futures, submission_failures = submit_dataset_downloads(
+        futures = submit_dataset_downloads(
             "coll",
             dataset,
             Path(tmp_path),
+            db,
             http_ex,
             s3_ex,
-            DownloadDisplay(),
+            display,
             _NEVER_CANCEL,
         )
 
-    assert futures == []
-    assert len(submission_failures) == 1
-    assert "Unsupported URL scheme" in submission_failures[0].reason
+    assert futures == {}
+    assert len(listing_failures) == 1
+    assert "Unsupported URL scheme" in listing_failures[0].reason
+    # The real invariant the submit loop relies on: _list_and_record never
+    # inserts an unknown-scheme URL into the DB, so the loop only ever sees
+    # s3/http. This guards the removal of the old defensive `else` branch —
+    # if an unknown scheme leaked into the DB it would be submitted as http.
+    assert list(db.iter_entries_for_dataset(dataset.slug)) == []
 
 
 def test_submit_dataset_downloads_submits_every_expanded_s3_object(
@@ -430,23 +518,28 @@ def test_submit_dataset_downloads_submits_every_expanded_s3_object(
         ) as mock_s3,
         patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=expanded),
     ):
+        db = _fresh_db(tmp_path, "coll-x")
+        display = DownloadDisplay()
+        listing_failures = _list_and_record("coll-x", dataset, db, display)
+
         with (
             ThreadPoolExecutor(max_workers=2) as http_ex,
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
-            futures, submission_failures = submit_dataset_downloads(
+            futures = submit_dataset_downloads(
                 "coll-x",
                 dataset,
                 Path(tmp_path),
+                db,
                 http_ex,
                 s3_ex,
-                DownloadDisplay(),
+                display,
                 _NEVER_CANCEL,
             )
             for f in futures:
                 f.result()
 
-    assert submission_failures == []
+    assert listing_failures == []
     assert len(futures) == len(expanded)
     submitted_uris = {call.args[0] for call in mock_s3.call_args_list}
     assert submitted_uris == {uri for uri, _ in expanded}
@@ -469,27 +562,113 @@ def test_submit_dataset_downloads_records_failure_when_s3_listing_fails(
         "biohub_data_cli.utils.s3.expand_s3_location",
         side_effect=RuntimeError("listing failed: access denied"),
     ):
+        db = _fresh_db(tmp_path, "coll-x")
+        display = DownloadDisplay()
+        listing_failures = _list_and_record("coll-x", dataset, db, display)
+
         with (
             ThreadPoolExecutor(max_workers=1) as http_ex,
             ThreadPoolExecutor(max_workers=1) as s3_ex,
         ):
-            futures, submission_failures = submit_dataset_downloads(
+            futures = submit_dataset_downloads(
                 "coll-x",
                 dataset,
                 Path(tmp_path),
+                db,
                 http_ex,
                 s3_ex,
-                DownloadDisplay(),
+                display,
                 _NEVER_CANCEL,
             )
 
-    assert futures == []
-    assert len(submission_failures) == 1
-    failure = submission_failures[0]
+    assert futures == {}
+    assert len(listing_failures) == 1
+    failure = listing_failures[0]
     assert failure.collection_slug == "coll-x"
     assert failure.dataset_slug == "matrix-zarr"
     assert failure.url == "s3://bucket/bad-prefix/"
     assert "listing failed" in failure.reason
+
+
+def test_ensure_collection_listed_marks_fresh_when_all_datasets_list_cleanly(
+    tmp_path: Path,
+) -> None:
+    """Happy path: every dataset lists without error, so the listing is
+    cacheable and a resume run can trust it."""
+    collection = Collection.model_validate(
+        {
+            "id": "coll-1",
+            "slug": "coll",
+            "title": "Coll",
+            "datasets": [
+                {
+                    "id": "ds-1",
+                    "slug": "matrix-a",
+                    "title": "A",
+                    "urls": ["s3://bucket/a.h5ad"],
+                }
+            ],
+        }
+    )
+    db = DownloadStateDB.for_collection(Path(tmp_path), "coll")
+    with patch(
+        "biohub_data_cli.utils.s3.expand_s3_location",
+        return_value=[("s3://bucket/a.h5ad", 100)],
+    ):
+        ensure_collection_listed(collection, db, DownloadDisplay())
+
+    assert db.is_listing_fresh() is True
+
+
+def test_ensure_collection_listed_not_fresh_when_a_dataset_fails_to_list(
+    tmp_path: Path,
+) -> None:
+    """Regression: a partial listing must NOT be marked complete.
+
+    If one dataset's S3 prefix fails to list, the listing is left non-fresh so
+    the next run re-lists from scratch. Otherwise resume would skip listing,
+    find no entries for the failed dataset, never resurface the failure, and
+    falsely report success.
+    """
+    collection = Collection.model_validate(
+        {
+            "id": "coll-1",
+            "slug": "coll",
+            "title": "Coll",
+            "datasets": [
+                {
+                    "id": "ds-ok",
+                    "slug": "matrix-ok",
+                    "title": "OK",
+                    "urls": ["s3://bucket/good/a.h5ad"],
+                },
+                {
+                    "id": "ds-bad",
+                    "slug": "matrix-bad",
+                    "title": "Bad",
+                    "urls": ["s3://bucket/bad-prefix/"],
+                },
+            ],
+        }
+    )
+    db = DownloadStateDB.for_collection(Path(tmp_path), "coll")
+    display = DownloadDisplay()
+
+    def fake_expand(uri: str, *args: object, **kwargs: object) -> list[tuple[str, int]]:
+        if uri == "s3://bucket/bad-prefix/":
+            raise RuntimeError("listing failed: access denied")
+        return [(uri, 100)]
+
+    with patch(
+        "biohub_data_cli.utils.s3.expand_s3_location",
+        side_effect=fake_expand,
+    ):
+        ensure_collection_listed(collection, db, display)
+
+    # The failure is surfaced now...
+    assert any(f.dataset_slug == "matrix-bad" for f in display.failures)
+    # ...and the listing is NOT trusted for resume, so the next run re-lists.
+    assert db.is_listing_fresh() is False
 
 
 # ── download_collections ────────────────────────────────────────────────────
@@ -500,7 +679,10 @@ def test_download_collections_writes_to_collection_dataset_subdirs(
 ) -> None:
     """Verifies the outdir/<collection.slug>/<dataset.slug>/ layout."""
     with (
-        patch("biohub_data_cli.download.download_http", return_value=None) as mock_http,
+        patch(
+            "biohub_data_cli.download.download_http",
+            return_value=DownloadResult.succeeded(1024),
+        ) as mock_http,
         patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
     ):
         download_collections([MOCK_COLLECTION], Path(tmp_path))
@@ -552,7 +734,10 @@ def test_download_collections_submits_every_dataset_across_collections(
     )
 
     with (
-        patch("biohub_data_cli.download.download_http", return_value=None) as mock_http,
+        patch(
+            "biohub_data_cli.download.download_http",
+            return_value=DownloadResult.succeeded(1024),
+        ) as mock_http,
         patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
     ):
         failures = download_collections([coll_a, coll_b], Path(tmp_path))
@@ -579,12 +764,52 @@ def test_download_collections_collects_worker_failures(tmp_path: Path) -> None:
     )
 
     with (
-        patch("biohub_data_cli.download.download_http", return_value=failure),
+        patch(
+            "biohub_data_cli.download.download_http",
+            return_value=DownloadResult.failed(failure),
+        ),
         patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
     ):
         failures = download_collections([MOCK_COLLECTION], Path(tmp_path))
 
     assert failures == [failure]
+
+
+def test_download_collections_persists_downloaded_size(tmp_path: Path) -> None:
+    """A successful worker returns a `DownloadResult` carrying the byte count, and
+    the orchestrator must persist exactly that size via `mark_downloaded` — the
+    success contract is the size, not just "not a failure"."""
+    collection = Collection.model_validate(
+        {
+            "id": "c",
+            "slug": "sized-collection",
+            "title": "Sized",
+            "datasets": [
+                {
+                    "id": "d1",
+                    "slug": "ds1",
+                    "title": "D1",
+                    "urls": ["https://example.com/a.parquet"],
+                }
+            ],
+        }
+    )
+
+    with (
+        patch(
+            "biohub_data_cli.download.download_http",
+            return_value=DownloadResult.succeeded(123),
+        ),
+        patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=[]),
+        patch.object(DownloadStateDB, "mark_downloaded", autospec=True) as mock_mark,
+    ):
+        failures = download_collections([collection], Path(tmp_path))
+
+    assert failures == []
+    # The size from the DownloadResult is threaded through to persistence.
+    mock_mark.assert_called_once()
+    assert mock_mark.call_args.kwargs == {"size": 123}
+    assert mock_mark.call_args.args[1:] == ("ds1", "https://example.com/a.parquet")
 
 
 def test_download_collections_shuts_down_on_keyboard_interrupt(tmp_path: Path) -> None:
@@ -618,10 +843,10 @@ def test_download_collections_passes_cancel_event_to_workers(tmp_path: Path) -> 
     received_cancels: list[object] = []
     signature = inspect.signature(download_http)
 
-    def capture(*args: object, **kwargs: object) -> None:
+    def capture(*args: object, **kwargs: object) -> DownloadResult:
         bound = signature.bind(*args, **kwargs)
         received_cancels.append(bound.arguments["cancel"])
-        return None
+        return DownloadResult.succeeded(0)
 
     with (
         patch("biohub_data_cli.download.download_http", side_effect=capture),
@@ -660,12 +885,22 @@ def test_submit_dataset_downloads_creates_one_progress_task_per_dataset(
         ) as mock_s3,
         patch("biohub_data_cli.utils.s3.expand_s3_location", return_value=expanded),
     ):
+        db = _fresh_db(tmp_path)
+        _list_and_record("coll", dataset, db, display)
+
         with (
             ThreadPoolExecutor(max_workers=2) as http_ex,
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
-            futures, _ = submit_dataset_downloads(
-                "coll", dataset, Path(tmp_path), http_ex, s3_ex, display, _NEVER_CANCEL
+            futures = submit_dataset_downloads(
+                "coll",
+                dataset,
+                Path(tmp_path),
+                db,
+                http_ex,
+                s3_ex,
+                display,
+                _NEVER_CANCEL,
             )
             for f in futures:
                 f.result()
@@ -712,12 +947,22 @@ def test_submit_dataset_downloads_http_only_ignores_be_file_size_bytes(
         return None
 
     with patch("biohub_data_cli.download.download_http", side_effect=fake_http):
+        db = _fresh_db(tmp_path)
+        _list_and_record("coll", dataset, db, display)
+
         with (
             ThreadPoolExecutor(max_workers=2) as http_ex,
             ThreadPoolExecutor(max_workers=2) as s3_ex,
         ):
-            futures, _ = submit_dataset_downloads(
-                "coll", dataset, Path(tmp_path), http_ex, s3_ex, display, _NEVER_CANCEL
+            futures = submit_dataset_downloads(
+                "coll",
+                dataset,
+                Path(tmp_path),
+                db,
+                http_ex,
+                s3_ex,
+                display,
+                _NEVER_CANCEL,
             )
             for f in futures:
                 f.result()
@@ -741,16 +986,26 @@ def test_submit_dataset_downloads_no_progress_task_when_only_submission_failures
     )
     display = DownloadDisplay()
 
+    db = _fresh_db(tmp_path)
+    listing_failures = _list_and_record("coll", dataset, db, display)
+
     with (
         ThreadPoolExecutor(max_workers=1) as http_ex,
         ThreadPoolExecutor(max_workers=1) as s3_ex,
     ):
-        futures, submission_failures = submit_dataset_downloads(
-            "coll", dataset, Path(tmp_path), http_ex, s3_ex, display, _NEVER_CANCEL
+        futures = submit_dataset_downloads(
+            "coll",
+            dataset,
+            Path(tmp_path),
+            db,
+            http_ex,
+            s3_ex,
+            display,
+            _NEVER_CANCEL,
         )
 
-    assert futures == []
-    assert len(submission_failures) == 1
+    assert futures == {}
+    assert len(listing_failures) == 1
     assert display.progress.tasks == []
 
 

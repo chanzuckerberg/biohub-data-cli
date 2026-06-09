@@ -41,6 +41,26 @@ class DownloadFailure:
     reason: str
 
 
+@dataclass(frozen=True)
+class DownloadResult:
+    """Outcome of a single file download."""
+
+    size: int | None = None
+    failure: DownloadFailure | None = None
+
+    @classmethod
+    def succeeded(cls, size: int) -> "DownloadResult":
+        return cls(size=size)
+
+    @classmethod
+    def failed(cls, failure: DownloadFailure) -> "DownloadResult":
+        return cls(failure=failure)
+
+    @property
+    def ok(self) -> bool:
+        return self.failure is None
+
+
 @dataclass
 class DatasetStats:
     """Per-dataset aggregate of a dry-run S3 resolution.

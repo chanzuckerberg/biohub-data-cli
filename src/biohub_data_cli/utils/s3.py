@@ -15,7 +15,7 @@ from botocore.client import BaseClient
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
-from biohub_data_cli.models import DownloadFailure
+from biohub_data_cli.models import DownloadFailure, DownloadResult
 from biohub_data_cli.utils.cli import DownloadCancelled, safe_join
 
 _S3_MULTIPART_SIZE = 16 * 1024 * 1024  # 16 MB
@@ -338,7 +338,7 @@ def download_s3_object(
     dataset_slug: str,
     on_bytes_downloaded: Callable[[int], None],
     cancel: threading.Event,
-) -> DownloadFailure | None:
+) -> DownloadResult:
     """Download a single S3 object into outdir, preserving the full S3 key structure.
 
     No `on_size_known` callback here — S3 sizes are already accumulated into
@@ -367,12 +367,14 @@ def download_s3_object(
         )
         S3Transfer(s3, cfg).download_file(bucket, key, str(tmp), callback=callback)
         tmp.replace(outpath)
-        return None
+        return DownloadResult.succeeded(outpath.stat().st_size)
     except (BotoCoreError, ClientError, OSError) as e:
         tmp.unlink(missing_ok=True)
-        return DownloadFailure(
-            collection_slug=collection_slug,
-            dataset_slug=dataset_slug,
-            url=uri,
-            reason=str(e),
+        return DownloadResult.failed(
+            DownloadFailure(
+                collection_slug=collection_slug,
+                dataset_slug=dataset_slug,
+                url=uri,
+                reason=str(e),
+            )
         )
