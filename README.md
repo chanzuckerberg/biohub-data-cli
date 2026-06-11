@@ -35,6 +35,12 @@ Download multiple collections to a specific directory, skipping the prompt:
 ops-data download collection <id-a> <id-b> -o ./data -y
 ```
 
+Download only specific datasets from a collection:
+
+```bash
+ops-data download collection <collection-id> --dataset dataset-1,dataset-2
+```
+
 Files land under `<outdir>/<collection-slug>/<dataset-slug>/`.
 
 ## Commands
@@ -47,9 +53,13 @@ Download one or more collections by ID.
 |--------|-------------|
 | `-o, --outdir PATH` | Output directory. Defaults to `.`. |
 | `-y, --yes` | Skip the size-estimate confirmation prompt. |
+| `--dataset SLUGS` | Comma-separated dataset slugs to download a subset of the collection. Only valid with a single collection. |
 | `--dry-run` | Print per-dataset size statistics without downloading. Mutually exclusive with `-y`. |
+| `--no-resume` | Ignore cached listing state and re-list/re-download from scratch. |
 
 **Dry run** resolves every S3 URI (listing prefixes, heading objects) to report exact byte totals per dataset. HTTP URLs are not sized during dry run and surface as a warning in the summary.
+
+**Filtering datasets** with `--dataset` downloads only the named datasets from a collection instead of all of them, e.g. `--dataset dataset-1,dataset-2`. Slugs are downloaded in the order given, duplicates are ignored, and an unknown slug fails with the list of available slugs. Run `--dry-run` first to see the available slugs. Filtering applies to a single collection, so it can't be combined with multiple IDs.
 
 **Confirmation prompt** shows the aggregate size estimate before any bytes move. Pass `-y` to skip it in scripts.
 

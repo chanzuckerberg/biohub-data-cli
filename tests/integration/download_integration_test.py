@@ -281,3 +281,33 @@ def test_no_resume_forces_full_redownload(tmp_path: Path) -> None:
     after = _mtimes(tmp_path)
     assert set(after) == set(before), "file set changed after --no-resume"
     assert all(after[p] > before[p] for p in before), "files were not re-downloaded"
+
+
+@pytest.mark.integration
+def test_dataset_filter_downloads_only_the_selected_dataset(tmp_path: Path) -> None:
+    """`--dataset` downloads just the named dataset; a later full run fetches the
+    rest of the collection without re-downloading the one already on disk."""
+    collection = _load_collection(SMALL_FIXTURE)
+    selected = next(
+        ds for ds in collection.datasets if any(u.startswith("s3://") for u in ds.urls)
+    )
+    rest = next(ds for ds in collection.datasets if ds.slug != selected.slug)
+    coll_dir = tmp_path / collection.slug
+
+    _assert_ok(
+        _run_download(collection.id, tmp_path, "--dataset", selected.slug),
+        "filtered download",
+    )
+    assert _data_files(coll_dir / selected.slug), "selected dataset was not downloaded"
+    assert not (coll_dir / rest.slug).exists(), (
+        "filter downloaded an unselected dataset"
+    )
+
+    selected_before = _mtimes(coll_dir / selected.slug)
+
+    _assert_ok(_run_download(collection.id, tmp_path), "full download")
+
+    assert _data_files(coll_dir / rest.slug), "full run did not download the rest"
+    assert _mtimes(coll_dir / selected.slug) == selected_before, (
+        "already-downloaded dataset was needlessly re-downloaded"
+    )

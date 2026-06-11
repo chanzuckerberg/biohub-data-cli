@@ -4,8 +4,8 @@ One DB per collection, at `{outdir}/{collection_slug}/.biohub-data-cli/state.db`
 Holds the cached S3/HTTP listing plus a per-file `downloaded` flag, so an
 interrupted run can pick up where it left off without re-listing.
 
-Listings are cached for `LISTING_TTL` (5 days) — bucket contents change, so
-stale entries get nuked rather than blindly trusted.
+Listing freshness is tracked per dataset (`dataset_listings.listed_at`): a
+dataset's cached listing is reused within `LISTING_TTL` and re-listed after.
 
 Concurrency: none. All DB access happens on the main thread.
 """
@@ -19,6 +19,8 @@ from typing import Iterator
 
 LISTING_TTL = timedelta(days=5)
 
+SCHEMA_VERSION = 1
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS collection_entries (
     dataset_slug  TEXT NOT NULL,
@@ -27,8 +29,9 @@ CREATE TABLE IF NOT EXISTS collection_entries (
     downloaded    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (dataset_slug, url)
 );
-CREATE TABLE IF NOT EXISTS collection_metadata (
-    listing_completed_at TEXT
+CREATE TABLE IF NOT EXISTS dataset_listings (
+    dataset_slug TEXT PRIMARY KEY,
+    listed_at    TEXT NOT NULL
 );
 """
 
@@ -81,49 +84,75 @@ class DownloadStateDB:
         return self.path.exists()
 
     def init_fresh(self) -> None:
-        """Remove any existing DB at this path and recreate empty tables.
-
-        Used at the start of a non-resumed run, and after detecting a stale
-        or incomplete listing. After this call, `listing_completed_at` is NULL
-        — the caller must call `mark_listing_complete()` once the listing
-        loop finishes successfully.
+        """Remove any existing DB and recreate empty tables stamped with the
+        current schema version. Used for `--no-resume` and as the rebuild path
+        when an existing DB is absent, corrupt, or a different schema version.
         """
         self._unlink()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            conn.commit()
+            # Stamp the version last: if we crash mid-init, the version stays 0
+            # and `ensure_ready` rebuilds, so a matching version always implies
+            # the tables exist.
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def ensure_ready(self) -> None:
+        """Make the DB usable for a resumed run, preserving a valid same-version
+        DB so resume works. Creates it if absent, and discards-and-rebuilds if
+        it's corrupt or written by a different schema version.
+        """
+        if not self.path.exists():
+            self.init_fresh()
+            return
+        try:
+            with self._connect() as conn:
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+        except sqlite3.DatabaseError:
+            version = None
+        if version != SCHEMA_VERSION:
+            self.init_fresh()
+
+    # ── listing freshness (per dataset) ─────────────────────────────────
+
+    def get_unexpired_dataset_slugs(self) -> set[str]:
+        """Datasets whose cached listing is still within TTL and can be reused
+        without re-listing. Stale or malformed rows are omitted (→ re-list).
+        """
+        cutoff = datetime.now(timezone.utc) - LISTING_TTL
+        unexpired: set[str] = set()
+        with self._connect() as conn:
+            for slug, listed_at in conn.execute(
+                "SELECT dataset_slug, listed_at FROM dataset_listings"
+            ):
+                try:
+                    if datetime.fromisoformat(listed_at) > cutoff:
+                        unexpired.add(slug)
+                except ValueError:
+                    continue
+        return unexpired
+
+    def mark_dataset_listed(self, dataset_slug: str) -> None:
+        """Record that `dataset_slug` was just listed cleanly."""
+        with self._connect() as conn:
             conn.execute(
-                "INSERT INTO collection_metadata (listing_completed_at) VALUES (NULL)"
+                "INSERT INTO dataset_listings (dataset_slug, listed_at) VALUES (?, ?) "
+                "ON CONFLICT(dataset_slug) DO UPDATE SET listed_at = excluded.listed_at",
+                (dataset_slug, datetime.now(timezone.utc).isoformat()),
             )
             conn.commit()
 
-    # ── listing freshness ──────────────────────────────────────────────
-
-    def is_listing_fresh(self) -> bool:
-        """True iff the DB has a non-NULL `listing_completed_at` within TTL.
-
-        Returns False for missing DB, corrupted DB, never-completed listing,
-        or expired listing — all four collapse into "don't trust, re-list".
+    def delete_dataset_entries(self, dataset_slug: str) -> None:
+        """Drop a dataset's entries and listing record before a re-list, so a
+        stale or partial listing doesn't leave orphaned rows.
         """
-        if not self.path.exists():
-            return False
-        try:
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT listing_completed_at FROM collection_metadata LIMIT 1"
-                ).fetchone()
-            if row is None or row[0] is None:
-                return False
-            completed_at = datetime.fromisoformat(row[0])
-            return datetime.now(timezone.utc) - completed_at < LISTING_TTL
-        except (sqlite3.DatabaseError, ValueError):
-            return False
-
-    def mark_listing_complete(self) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE collection_metadata SET listing_completed_at = ?",
-                (datetime.now(timezone.utc).isoformat(),),
+                "DELETE FROM collection_entries WHERE dataset_slug = ?", (dataset_slug,)
+            )
+            conn.execute(
+                "DELETE FROM dataset_listings WHERE dataset_slug = ?", (dataset_slug,)
             )
             conn.commit()
 

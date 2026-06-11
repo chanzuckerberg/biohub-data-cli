@@ -22,23 +22,16 @@ def test_init_fresh_creates_parent_dirs_and_empty_tables(tmp_path: Path) -> None
 
     assert db.path.exists()
     with sqlite3.connect(db.path) as conn:
-        # Tables exist.
         names = {
             r[0]
             for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        assert {"collection_entries", "collection_metadata"} <= names
-        # Exactly one metadata row — mark_listing_complete()'s no-WHERE UPDATE
-        # relies on this singleton invariant.
-        count = conn.execute("SELECT COUNT(*) FROM collection_metadata").fetchone()[0]
-        assert count == 1
-        # metadata row was seeded with NULL listing_completed_at.
-        row = conn.execute(
-            "SELECT listing_completed_at FROM collection_metadata"
-        ).fetchone()
-        assert row == (None,)
+        assert {"collection_entries", "dataset_listings"} <= names
+        # Stamped with the current schema version for cross-version detection.
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert version == download_state.SCHEMA_VERSION
 
 
 def test_init_fresh_nukes_existing_state(tmp_path: Path) -> None:
@@ -174,44 +167,105 @@ def test_dataset_progress_empty_dataset(tmp_path: Path) -> None:
     assert (p.total_count, p.pending_count, p.total_bytes, p.done_bytes) == (0, 0, 0, 0)
 
 
-def test_is_listing_fresh_false_when_missing(tmp_path: Path) -> None:
-    db = DownloadStateDB.for_collection(tmp_path, "never-initialized")
-    assert db.is_listing_fresh() is False
-
-
-def test_is_listing_fresh_false_when_listing_in_progress(tmp_path: Path) -> None:
+def test_get_unexpired_dataset_slugs_empty_after_init(tmp_path: Path) -> None:
     db = _new_db(tmp_path)
-    # init_fresh leaves listing_completed_at = NULL; that's "listing in progress".
-    assert db.is_listing_fresh() is False
+    assert db.get_unexpired_dataset_slugs() == set()
 
 
-def test_is_listing_fresh_true_after_mark_complete(tmp_path: Path) -> None:
+def test_mark_dataset_listed_makes_slug_fresh(tmp_path: Path) -> None:
     db = _new_db(tmp_path)
-    db.mark_listing_complete()
-    assert db.is_listing_fresh() is True
+    db.mark_dataset_listed("ds1")
+    db.mark_dataset_listed("ds2")
+    assert db.get_unexpired_dataset_slugs() == {"ds1", "ds2"}
 
 
-def test_is_listing_fresh_false_after_ttl_expiry(tmp_path: Path) -> None:
+def test_mark_dataset_listed_is_idempotent(tmp_path: Path) -> None:
     db = _new_db(tmp_path)
-    # Hand-write a timestamp older than TTL — simpler than freezing time.
+    db.mark_dataset_listed("ds1")
+    db.mark_dataset_listed("ds1")  # ON CONFLICT updates listed_at, no PK error
+    assert db.get_unexpired_dataset_slugs() == {"ds1"}
+
+
+def test_get_unexpired_dataset_slugs_excludes_ttl_expired(tmp_path: Path) -> None:
+    db = _new_db(tmp_path)
+    db.mark_dataset_listed("fresh-ds")
+    # Hand-write an expired timestamp — simpler than freezing time.
     expired = (
         datetime.now(timezone.utc) - download_state.LISTING_TTL - timedelta(minutes=1)
     )
     with sqlite3.connect(db.path) as conn:
         conn.execute(
-            "UPDATE collection_metadata SET listing_completed_at = ?",
-            (expired.isoformat(),),
+            "INSERT INTO dataset_listings (dataset_slug, listed_at) VALUES (?, ?)",
+            ("stale-ds", expired.isoformat()),
         )
         conn.commit()
 
-    assert db.is_listing_fresh() is False
+    assert db.get_unexpired_dataset_slugs() == {"fresh-ds"}
 
 
-def test_is_listing_fresh_false_for_corrupted_db(tmp_path: Path) -> None:
+def test_delete_dataset_entries_clears_rows_and_listing(tmp_path: Path) -> None:
+    db = _new_db(tmp_path)
+    db.insert_entries(
+        [
+            CollectionEntry("ds1", "s3://b/a", 100, downloaded=False),
+            CollectionEntry("ds2", "s3://b/c", 300, downloaded=False),
+        ]
+    )
+    db.mark_dataset_listed("ds1")
+    db.mark_dataset_listed("ds2")
+
+    db.delete_dataset_entries("ds1")
+
+    assert list(db.iter_entries_for_dataset("ds1")) == []
+    assert db.get_unexpired_dataset_slugs() == {"ds2"}  # ds2 untouched
+    assert {e.url for e in db.iter_entries_for_dataset("ds2")} == {"s3://b/c"}
+
+
+def test_ensure_ready_creates_db_when_absent(tmp_path: Path) -> None:
+    db = DownloadStateDB.for_collection(tmp_path, "new-coll")
+    assert not db.exists()
+
+    db.ensure_ready()
+
+    assert db.exists()
+    assert db.get_unexpired_dataset_slugs() == set()
+
+
+def test_ensure_ready_preserves_same_version_db(tmp_path: Path) -> None:
+    db = _new_db(tmp_path)
+    db.insert_entries([CollectionEntry("ds1", "s3://b/k", 100, downloaded=True)])
+    db.mark_dataset_listed("ds1")
+
+    db.ensure_ready()  # same SCHEMA_VERSION → must not nuke
+
+    assert db.get_unexpired_dataset_slugs() == {"ds1"}
+    assert len(list(db.iter_entries_for_dataset("ds1"))) == 1
+
+
+def test_ensure_ready_rebuilds_on_schema_version_mismatch(tmp_path: Path) -> None:
+    db = _new_db(tmp_path)
+    db.insert_entries([CollectionEntry("ds1", "s3://b/k", 100, downloaded=True)])
+    db.mark_dataset_listed("ds1")
+    # Simulate a DB written by a different schema version.
+    with sqlite3.connect(db.path) as conn:
+        conn.execute(f"PRAGMA user_version = {download_state.SCHEMA_VERSION + 1}")
+        conn.commit()
+
+    db.ensure_ready()
+
+    # Discarded and rebuilt: prior state gone, version reset to current.
+    assert list(db.iter_entries_for_dataset("ds1")) == []
+    assert db.get_unexpired_dataset_slugs() == set()
+    with sqlite3.connect(db.path) as conn:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert version == download_state.SCHEMA_VERSION
+
+
+def test_ensure_ready_rebuilds_corrupted_db(tmp_path: Path) -> None:
     db = DownloadStateDB.for_collection(tmp_path, "corrupt")
     db.path.parent.mkdir(parents=True, exist_ok=True)
     db.path.write_bytes(b"this is not a sqlite database")
 
-    # Should return False (treat as not fresh → trigger fresh re-init) rather
-    # than raising into the orchestrator.
-    assert db.is_listing_fresh() is False
+    db.ensure_ready()  # rebuild rather than raise into the orchestrator
+
+    assert db.get_unexpired_dataset_slugs() == set()
