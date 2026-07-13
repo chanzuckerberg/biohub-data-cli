@@ -100,7 +100,7 @@ jobs:
 
       - name: Generate build config
         env:
-          OPS_SERVICE_URL: ${{ vars.OPS_SERVICE_URL }}
+          ALL_DATA_API_URL: ${{ vars.ALL_DATA_API_URL }}
         run: uv run python ci/generate_build_config.py
 
       - name: Build package

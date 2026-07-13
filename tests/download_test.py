@@ -73,7 +73,7 @@ def test_fetch_collection_hits_backend_when_no_fixtures_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
-    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+    monkeypatch.setenv("ALL_DATA_API_URL_OVERRIDE", "https://backend.example.com")
 
     mock_response = SimpleNamespace(
         content=MOCK_COLLECTION.model_dump_json().encode(),
@@ -86,18 +86,40 @@ def test_fetch_collection_hits_backend_when_no_fixtures_dir(
         result = fetch_collection("coll-1")
 
     args, kwargs = mock_get.call_args
-    assert args == ("https://backend.example.com/v1/cli/collections/coll-1",)
+    assert args == ("https://backend.example.com/v1/collections/coll-1/manifest",)
     assert kwargs["timeout"] == 30
     # User-Agent carries the version the backend parses; no dry-run header on a
     # plain (download) fetch.
     assert kwargs["headers"]["User-Agent"].startswith("biohub-data-cli/")
     assert "X-Biohub-Data-Cli-Dry-Run" not in kwargs["headers"]
+    # No auth header unless a token is configured (public deployment).
+    assert "Authorization" not in kwargs["headers"]
     assert result.slug == MOCK_COLLECTION.slug
+
+
+def test_fetch_collection_sends_bearer_token_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
+    monkeypatch.setenv("ALL_DATA_API_URL_OVERRIDE", "https://backend.example.com")
+    monkeypatch.setenv("ALL_DATA_API_TOKEN", "tok-abc")
+
+    mock_response = SimpleNamespace(
+        content=MOCK_COLLECTION.model_dump_json().encode(),
+        raise_for_status=lambda: None,
+    )
+
+    with patch(
+        "biohub_data_cli.download.requests.get", return_value=mock_response
+    ) as mock_get:
+        fetch_collection("coll-1")
+
+    assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer tok-abc"
 
 
 def test_fetch_collection_sends_dry_run_header(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
-    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+    monkeypatch.setenv("ALL_DATA_API_URL_OVERRIDE", "https://backend.example.com")
 
     mock_response = SimpleNamespace(
         content=MOCK_COLLECTION.model_dump_json().encode(),
@@ -118,7 +140,7 @@ def test_fetch_collection_omits_disable_analytics_header_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
-    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+    monkeypatch.setenv("ALL_DATA_API_URL_OVERRIDE", "https://backend.example.com")
 
     mock_response = SimpleNamespace(
         content=MOCK_COLLECTION.model_dump_json().encode(),
@@ -138,7 +160,7 @@ def test_fetch_collection_sends_disable_analytics_header_when_opted_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
-    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+    monkeypatch.setenv("ALL_DATA_API_URL_OVERRIDE", "https://backend.example.com")
 
     mock_response = SimpleNamespace(
         content=MOCK_COLLECTION.model_dump_json().encode(),
@@ -176,15 +198,15 @@ def test_analytics_disabled(
     assert analytics_disabled() is expected
 
 
-def test_fetch_collection_wraps_backend_s3_uri_into_urls(
+def test_fetch_collection_parses_manifest_urls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # BE returns a singular `s3_uri` per dataset; the validator wraps it into
-    # our `urls: list[str]` shape so the download stack sees one field.
+    # all-data-api's manifest returns each dataset with its `urls` list directly,
+    # plus a `skipped` list the Collection model ignores.
     monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
-    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+    monkeypatch.setenv("ALL_DATA_API_URL_OVERRIDE", "https://backend.example.com")
 
-    backend_payload = {
+    manifest_payload = {
         "id": "coll-1",
         "slug": "test-collection",
         "title": "Test Collection",
@@ -194,12 +216,15 @@ def test_fetch_collection_wraps_backend_s3_uri_into_urls(
                 "slug": "matrix-a",
                 "title": "Matrix A",
                 "file_size_bytes": 1024,
-                "s3_uri": "s3://bucket/matrix-a/",
+                "urls": ["s3://bucket/matrix-a/"],
             }
+        ],
+        "skipped": [
+            {"dataset": "ds-2", "reason": "not on S3", "location_uri": "file:///x"}
         ],
     }
     mock_response = SimpleNamespace(
-        content=json.dumps(backend_payload).encode(),
+        content=json.dumps(manifest_payload).encode(),
         raise_for_status=lambda: None,
     )
 
@@ -213,7 +238,7 @@ def test_fetch_collection_wraps_request_errors_as_click_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("DATA_CLI_FIXTURES_DIR", raising=False)
-    monkeypatch.setenv("OPS_SERVICE_URL_OVERRIDE", "https://backend.example.com")
+    monkeypatch.setenv("ALL_DATA_API_URL_OVERRIDE", "https://backend.example.com")
 
     with patch(
         "biohub_data_cli.download.requests.get",

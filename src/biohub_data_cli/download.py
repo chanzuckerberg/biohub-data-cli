@@ -40,7 +40,7 @@ from pydantic import ValidationError
 from rich.filesize import decimal as format_bytes
 from rich.markup import escape
 
-from biohub_data_cli.config import service_url
+from biohub_data_cli.config import auth_token, service_url
 from biohub_data_cli.models import Collection, Dataset, DownloadFailure
 from biohub_data_cli.utils.cli import DownloadDisplay, console
 from biohub_data_cli.utils.download_state import (
@@ -99,15 +99,18 @@ def _user_agent() -> str:
 def fetch_collection(
     collection_id: str, dry_run: bool = False, analytics: bool = True
 ) -> Collection:
-    """Fetch a collection by id from the OPS backend's `/v1/cli/collections/{id}`.
+    """Fetch a collection by id from all-data-api's `/v1/collections/{id}/manifest`.
 
-    The request carries a `User-Agent: biohub-data-cli/<version>` header so the
-    backend can attribute usage to a CLI version, and — on dry runs — an
-    `X-Biohub-Data-Cli-Dry-Run: true` header so the backend emits a "stats
-    queried" metric instead of a "download initiated" one.
+    The manifest returns the collection with each dataset's downloadable S3 `urls`
+    already resolved (any S3 asset, since the CLI downloads with the user's own AWS
+    creds); non-S3 / external data is reported in the manifest's `skipped` list,
+    which the `Collection` model ignores.
 
-    When `analytics` is False, an `X-Biohub-Data-Cli-Disable-Analytics: true`
-    header asks the backend to skip the analytics event for this request.
+    The request carries a `User-Agent: biohub-data-cli/<version>` header, and — when
+    `$ALL_DATA_API_TOKEN` is set — an `Authorization: Bearer <token>` header for the
+    Okta-gated internal deployment (unset for a public one). The dry-run and
+    analytics headers are retained for forward compatibility; server-side analytics
+    are not wired on all-data-api yet.
 
     $DATA_CLI_FIXTURES_DIR, if set, short-circuits the HTTP call and loads
     `<collection_id>.json` from that directory. Used by integration tests to
@@ -121,12 +124,14 @@ def fetch_collection(
         return Collection.model_validate_json(path.read_text())
 
     headers = {"User-Agent": _user_agent()}
+    if (token := auth_token()) is not None:
+        headers["Authorization"] = f"Bearer {token}"
     if dry_run:
         headers[_DRY_RUN_HEADER] = "true"
     if not analytics:
         headers[_DISABLE_ANALYTICS_HEADER] = "true"
 
-    url = f"{service_url()}/v1/cli/collections/{collection_id}"
+    url = f"{service_url()}/v1/collections/{collection_id}/manifest"
     try:
         response = requests.get(url, timeout=30, headers=headers)
         response.raise_for_status()

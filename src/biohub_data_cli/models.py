@@ -1,11 +1,11 @@
 from dataclasses import dataclass
-from typing import Any
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 
 
 class Dataset(BaseModel):
-    """A single downloadable unit."""
+    """A single downloadable unit. Matches an entry in all-data-api's
+    `/v1/collections/{id}/manifest` response (each carries its `urls` directly)."""
 
     id: str
     slug: str
@@ -13,19 +13,10 @@ class Dataset(BaseModel):
     file_size_bytes: int | None = None
     urls: list[str]
 
-    @model_validator(mode="before")
-    @classmethod
-    def _wrap_s3_uri(cls, data: dict[str, Any]) -> dict[str, Any]:
-        # Backend `/v1/cli/collections/{id}` returns each dataset with a single
-        # `s3_uri: str`; lift it into our `urls: list[str]` so download code
-        # iterates one field.
-        if "s3_uri" in data:
-            data = {**data, "urls": [data["s3_uri"]]}
-        return data
-
 
 class Collection(BaseModel):
-    """A grouping of datasets."""
+    """A grouping of datasets. Maps directly onto the manifest response; extra
+    fields (e.g. `skipped`) are ignored."""
 
     id: str
     slug: str
