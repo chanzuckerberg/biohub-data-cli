@@ -101,6 +101,10 @@ jobs:
       - name: Generate build config
         env:
           ALL_DATA_API_URL: ${{ vars.ALL_DATA_API_URL }}
+          # Optional: set both to bake in `biohub-data login` for the Okta-gated
+          # deployment. Leave unset for a public build (login stays disabled).
+          OIDC_ISSUER: ${{ vars.OIDC_ISSUER }}
+          OIDC_CLIENT_ID: ${{ vars.OIDC_CLIENT_ID }}
         run: uv run python ci/generate_build_config.py
 
       - name: Build package

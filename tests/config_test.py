@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 import biohub_data_cli.config as config_mod
@@ -28,6 +30,10 @@ def test_auth_token_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config_mod.auth_token() == "tok-123"
 
 
-def test_auth_token_none_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auth_token_none_when_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.delenv("ALL_DATA_API_TOKEN", raising=False)
+    # No env token and no cached login (isolated empty config dir) -> None.
+    monkeypatch.setenv("BIOHUB_DATA_CLI_CONFIG_DIR", str(tmp_path))
     assert config_mod.auth_token() is None
