@@ -51,10 +51,10 @@ def _run_download(
 ) -> subprocess.CompletedProcess:
     """Invoke the installed CLI exactly as a user would, against the fixtures dir.
 
-    DATA_CLI_FIXTURES_DIR=<fixtures> ops-data download collection <id> -o <out> --yes [extra]
+    DATA_CLI_FIXTURES_DIR=<fixtures> biohub-data download collection <id> -o <out> --yes [extra]
     """
     cmd = [
-        "ops-data",
+        "biohub-data",
         "download",
         "collection",
         collection_id,

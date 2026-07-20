@@ -20,32 +20,35 @@ pip install biohub-data-cli
 See what a collection contains without downloading:
 
 ```bash
-ops-data download collection <collection-id> --dry-run
+biohub-data download collection <collection-id> --dry-run
 ```
 
 Download a collection to the current directory:
 
 ```bash
-ops-data download collection <collection-id>
+biohub-data download collection <collection-id>
 ```
 
 Download multiple collections to a specific directory, skipping the prompt:
 
 ```bash
-ops-data download collection <id-a> <id-b> -o ./data -y
+biohub-data download collection <id-a> <id-b> -o ./data -y
 ```
 
 Download only specific datasets from a collection:
 
 ```bash
-ops-data download collection <collection-id> --dataset dataset-1,dataset-2
+biohub-data download collection <collection-id> --dataset dataset-1,dataset-2
 ```
 
 Files land under `<outdir>/<collection-slug>/<dataset-slug>/`.
 
+> **Note:** `ops-data` remains as a deprecated alias for `biohub-data` (identical
+> behavior); it prints a deprecation warning and will be removed in a future release.
+
 ## Commands
 
-### `ops-data download collection IDS...`
+### `biohub-data download collection IDS...`
 
 Download one or more collections by ID.
 
@@ -90,7 +93,7 @@ uv run pytest --cov=biohub_data_cli --cov-report=term-missing
 Run the CLI from a checkout:
 
 ```bash
-uv run ops-data --help
+uv run biohub-data --help
 ```
 
 ### Integration tests

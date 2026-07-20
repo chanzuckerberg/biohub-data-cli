@@ -36,7 +36,9 @@ Repository = "https://github.com/chanzuckerberg/biohub-data-cli"
 Issues = "https://github.com/chanzuckerberg/biohub-data-cli/issues"
 
 [project.scripts]
-ops-data = "biohub_data_cli.main:cli"
+biohub-data = "biohub_data_cli.main:cli"
+# Deprecated alias for `biohub-data`; kept so existing scripts keep working.
+ops-data = "biohub_data_cli.main:ops_data"
 
 [tool.setuptools.packages.find]
 where = ["src"]
