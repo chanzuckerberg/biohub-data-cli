@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/chanzuckerberg/biohub-data-cli/compare/v0.4.0...v0.5.0) (2026-06-11)
+
+
+### Features
+
+* resumable download ([#32](https://github.com/chanzuckerberg/biohub-data-cli/issues/32)) ([ff5cf05](https://github.com/chanzuckerberg/biohub-data-cli/commit/ff5cf05c5847aa5ab33dc0e8c45b624f68416cf2))
+* support filtering datasets ([#36](https://github.com/chanzuckerberg/biohub-data-cli/issues/36)) ([bc84084](https://github.com/chanzuckerberg/biohub-data-cli/commit/bc84084a9471d938fcce5aa72a9360165fffb2e5))
+
+
+### Bug Fixes
+
+* pre-commit lint failure ([#34](https://github.com/chanzuckerberg/biohub-data-cli/issues/34)) ([9e28b81](https://github.com/chanzuckerberg/biohub-data-cli/commit/9e28b8117c5acb404968917f2298af08f1640e61))
+
 ## [0.4.0](https://github.com/chanzuckerberg/biohub-data-cli/compare/v0.3.0...v0.4.0) (2026-06-01)
 
 
